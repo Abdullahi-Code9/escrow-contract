@@ -8,13 +8,13 @@
 use super::*;
 use crate::test::setup_funded_escrow;
 use crate::{Error, EscrowInterestYieldConsentSetEvent};
-use soroban_sdk::testutils::{Address as _, Events as _};
+use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, IntoVal, Val};
 
 fn yldcons_event_count(env: &Env) -> u32 {
     let topic_val: Val = symbol_short!("yldcons").into_val(env);
     let mut count = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == topic_val.get_payload() {
                 count += 1;
@@ -36,7 +36,7 @@ fn test_escrow_interest_yield_consent_both_sign_succeeds() {
 
     // Tally immediately -- a later client call would reset the event buffer.
     assert_eq!(yldcons_event_count(&env), 1);
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     let ev = EscrowInterestYieldConsentSetEvent::from_val(&env, &events.last().unwrap().2);
     assert_eq!(ev.admin, admin_addr);
     assert_eq!(ev.client, client_addr);

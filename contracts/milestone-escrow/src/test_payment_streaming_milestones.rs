@@ -13,7 +13,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _, testutils::EnvTestConfig, testutils::Events, testutils::MockAuth,
+    testutils::Address as _, testutils::EnvTestConfig, testutils::MockAuth,
     testutils::MockAuthInvoke, token, vec, Address, Env, FromVal, IntoVal, Symbol, Val,
 };
 
@@ -289,7 +289,7 @@ fn test_consent_emits_event_naming_both_signers() {
     let topic: Val = symbol_short!("p_strcns").into_val(&env);
     let mut found = false;
 
-    for e in env.events().all().iter() {
+    for e in crate::all_event_tuples(&env).iter() {
         if let Some(t) = e.1.get(0) {
             if t.get_payload() == topic.get_payload() {
                 found = true;
@@ -314,7 +314,7 @@ fn test_consent_does_not_emit_event_when_validation_fails() {
     let _ = escrow.try_payment_streaming_consent(&0_i128, &1_i128, &2_i128);
 
     let topic: Val = symbol_short!("p_strcns").into_val(&env);
-    for e in env.events().all().iter() {
+    for e in crate::all_event_tuples(&env).iter() {
         if let Some(t) = e.1.get(0) {
             assert_ne!(
                 t.get_payload(),
@@ -575,7 +575,7 @@ fn test_streaming_matrix_emits_event_with_the_computed_split() {
     let topic: Val = Symbol::new(&env, "p_stream").into_val(&env);
     let mut found = false;
 
-    for e in env.events().all().iter() {
+    for e in crate::all_event_tuples(&env).iter() {
         if let Some(t) = e.1.get(0) {
             if t.get_payload() == topic.get_payload() {
                 found = true;

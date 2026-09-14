@@ -3,7 +3,6 @@ use super::*;
 use crate::{
     DataKey, EmergencyPauseAdminOverrideEvent, EmergencyPausedEvent, EmergencyUnpausedEvent, Error,
 };
-use soroban_sdk::testutils::Events as _;
 use soroban_sdk::{symbol_short, vec, Env, FromVal, IntoVal, Symbol, TryIntoVal, Val};
 
 #[test]
@@ -22,7 +21,7 @@ fn test_emergency_pause_happy_path_and_event() {
     client.emergency_pause(&client_addr, &freelancer_addr);
 
     // Verify event immediately
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     let last_event = events.last().unwrap();
     let topic: Symbol = last_event.1.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic, symbol_short!("empause"));
@@ -52,7 +51,7 @@ fn test_emergency_unpause_happy_path_and_event() {
     client.emergency_unpause(&admin_addr);
 
     // Verify event immediately
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     let last_event = events.last().unwrap();
     let topic: Symbol = last_event.1.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic, symbol_short!("emunpause"));
@@ -68,7 +67,7 @@ fn test_emergency_unpause_happy_path_and_event() {
 fn emoverrid_event_count(env: &Env) -> u32 {
     let topic_val: Val = symbol_short!("emoverrid").into_val(env);
     let mut count = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == topic_val.get_payload() {
                 count += 1;
@@ -80,7 +79,7 @@ fn emoverrid_event_count(env: &Env) -> u32 {
 
 /// Parse the most recent event, asserting it is an `emoverrid` event.
 fn last_emoverrid_event(env: &Env) -> EmergencyPauseAdminOverrideEvent {
-    let events = env.events().all();
+    let events = crate::all_event_tuples(env);
     let last = events.last().unwrap();
     let topic: Symbol = last.1.get(0).unwrap().try_into_val(env).unwrap();
     assert_eq!(topic, symbol_short!("emoverrid"));
@@ -100,7 +99,7 @@ fn test_emergency_pause_admin_override_happy_path_and_event() {
     client.emergency_pause_admin_override(&admin_addr, &true);
 
     // Verify event immediately
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     let last_event = events.last().unwrap();
     let topic: Symbol = last_event.1.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic, symbol_short!("emoverrid"));
@@ -117,7 +116,7 @@ fn test_emergency_pause_admin_override_happy_path_and_event() {
     client.emergency_pause_admin_override(&admin_addr, &false);
 
     // Verify event immediately
-    let events2 = env.events().all();
+    let events2 = crate::all_event_tuples(&env);
     let last_event2 = events2.last().unwrap();
     let topic2: Symbol = last_event2.1.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic2, symbol_short!("emoverrid"));

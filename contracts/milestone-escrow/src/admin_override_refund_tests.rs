@@ -13,7 +13,7 @@ use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, Val};
 fn refund_event_count(env: &Env) -> u32 {
     let topic_val: Val = symbol_short!("admovrf").into_val(env);
     let mut count = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == topic_val.get_payload() {
                 count += 1;

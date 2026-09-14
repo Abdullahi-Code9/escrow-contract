@@ -7,7 +7,7 @@ use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, IntoVal, Symbol, Try
 /// Count events matching the given 8-char topic symbol.
 fn event_count_for(env: &Env, topic: &Val) -> u32 {
     let mut count = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(env).iter() {
         if let Some(t) = event.1.get(0) {
             if t.get_payload() == topic.get_payload() {
                 count += 1;
@@ -17,7 +17,7 @@ fn event_count_for(env: &Env, topic: &Val) -> u32 {
     count
 }
 fn last_override_event(env: &Env) -> EmergencyPauseAdminOverrideEvent {
-    let events = env.events().all();
+    let events = crate::all_event_tuples(env);
     let last = events.last().unwrap();
     let topic: Symbol = last.1.get(0).unwrap().try_into_val(env).unwrap();
     assert_eq!(topic, Symbol::new(env, "emoverrid"));
@@ -279,7 +279,7 @@ fn success_emits_exactly_one_emoverrid_event_with_correct_payload() {
 
     // Override back to unpaused: the second call emits its own event.
     //
-    // The count is 1 again rather than 2 -- env.events().all() reports the
+    // The count is 1 again rather than 2 -- crate::all_event_tuples(&env) reports the
     // most recent contract invocation, not a running total across the test --
     // so this asserts the second call emitted exactly one event, and the
     // payload check below confirms it is the new one.

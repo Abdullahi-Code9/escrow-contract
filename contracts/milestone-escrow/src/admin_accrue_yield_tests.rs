@@ -9,7 +9,7 @@
 use super::*;
 use crate::test::setup_funded_escrow;
 use crate::{Error, YieldAccruedEvent};
-use soroban_sdk::testutils::{Address as _, Events as _};
+use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, IntoVal, Val};
 
 /// Running `YieldAccrued` total, via the public getter.
@@ -20,7 +20,7 @@ fn accrued(client: &MilestoneEscrowClient<'_>) -> i128 {
 fn yldacc_event_count(env: &Env) -> u32 {
     let topic_val: Val = symbol_short!("yldacc").into_val(env);
     let mut count = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == topic_val.get_payload() {
                 count += 1;
@@ -44,7 +44,7 @@ fn test_admin_accrue_yield_happy_path() {
     // Tally the event immediately: env.events() only reflects the most recent
     // invocation, so calling get_yield_info first would clear it.
     assert_eq!(yldacc_event_count(&env), 1);
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     let ev = YieldAccruedEvent::from_val(&env, &events.last().unwrap().2);
     assert_eq!(ev.admin, admin_addr);
     assert_eq!(ev.milestone_index, 0);

@@ -19,7 +19,7 @@ fn sum_allocs(allocations: &soroban_sdk::Vec<i128>) -> i128 {
 fn msigtrx_event_count(env: &Env) -> u32 {
     let topic_val: Val = symbol_short!("msigtrx").into_val(env);
     let mut count = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == topic_val.get_payload() {
                 count += 1;
@@ -30,7 +30,7 @@ fn msigtrx_event_count(env: &Env) -> u32 {
 }
 
 fn last_msigtrx_event(env: &Env) -> MultiSigTransferAdminEvent {
-    let events = env.events().all();
+    let events = crate::all_event_tuples(env);
     let last = events.last().unwrap();
     let topic: Symbol = last.1.get(0).unwrap().try_into_val(env).unwrap();
     assert_eq!(topic, Symbol::new(env, "msigtrx"));

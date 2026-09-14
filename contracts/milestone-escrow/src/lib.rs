@@ -8,8 +8,8 @@
 // unconditional, so the lint is disabled here deliberately.
 #![allow(clippy::redundant_closure_call)]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
-    Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN,
+    ContractExecutable, Env, Vec,
 };
 
 /// Maximum number of ratio slots that may be passed to `multisig_transfer_admin`.
@@ -1110,6 +1110,9 @@ pub struct MultiSigTransferAdminEvent {
 #[contract]
 pub struct MilestoneEscrow;
 
+// Deferred pending coordinated migration to #[contractevent] — see
+// escrow-backend's poller.ts, which reads the current event wire format.
+#[allow(deprecated)]
 #[contractimpl]
 impl MilestoneEscrow {
     fn load_admin(env: &Env) -> Result<Address, Error> {
@@ -2169,7 +2172,7 @@ impl MilestoneEscrow {
         Self::store_job_meta(&env, &meta);
 
         let token_client = token::Client::new(&env, &meta.token);
-        token_client.transfer(&client, &env.current_contract_address(), &total_amount);
+        token_client.transfer(&client, env.current_contract_address(), &total_amount);
 
         env.events().publish(
             (symbol_short!("fund"),),
@@ -3661,7 +3664,8 @@ impl MilestoneEscrow {
         Self::require_admin(&env, &admin)?;
         Self::ensure_not_paused(&env)?;
 
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        env.deployer()
+            .update_current_contract(ContractExecutable::Wasm(new_wasm_hash));
 
         let current: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(1);
         env.storage()
@@ -5038,6 +5042,62 @@ impl MilestoneEscrow {
     }
 }
 
+// `all_event_tuples` below collects into a `std::vec::Vec`; this crate is
+// `no_std`, so std has to be linked explicitly for the test build.
+#[cfg(test)]
+extern crate std;
+
+/// Test-only bridge from the SDK 28 event representation back to the
+/// `(contract, topics, data)` tuple shape that `Events::all()` returned before
+/// v25.
+///
+/// In SDK 28 `Events::all()` yields a `ContractEvents` struct whose only
+/// accessor is `events() -> &[xdr::ContractEvent]`, where topics and data are
+/// XDR `ScVal`s rather than host `Val`s. Converting each `ScVal` back through
+/// `TryFromVal<Env, ScVal> for Val` reproduces exactly the values the old API
+/// handed out, so the assertions built on top of this keep comparing what they
+/// always compared -- including `Val::get_payload()` identity, which is only
+/// equivalent to value equality because every topic in this suite is a
+/// `symbol_short!` (packed inline, never an object handle).
+#[cfg(test)]
+pub(crate) fn all_event_tuples(
+    env: &Env,
+) -> std::vec::Vec<(Address, Vec<soroban_sdk::Val>, soroban_sdk::Val)> {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::{xdr, TryFromVal, Val};
+
+    env.events()
+        .all()
+        .events()
+        .iter()
+        .map(|e| {
+            let xdr::ContractEventBody::V0(body) = &e.body;
+
+            let contract_id = e
+                .contract_id
+                .clone()
+                .expect("contract event without a contract id");
+            let address = Address::try_from_val(
+                env,
+                &xdr::ScVal::Address(xdr::ScAddress::Contract(contract_id)),
+            )
+            .expect("contract id is not a valid address");
+
+            let mut topics = Vec::new(env);
+            for topic in body.topics.iter() {
+                topics.push_back(
+                    Val::try_from_val(env, topic).expect("event topic is not convertible to Val"),
+                );
+            }
+
+            let data =
+                Val::try_from_val(env, &body.data).expect("event data is not convertible to Val");
+
+            (address, topics, data)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod admin_accrue_yield_tests;
 #[cfg(test)]
@@ -5082,6 +5142,9 @@ mod test_payment_streaming_milestones;
 //     indexers, auditors, and the parties involved receive an immutable record
 //     of what happened and who authorised it.
 
+// Deferred pending coordinated migration to #[contractevent] — see
+// escrow-backend's poller.ts, which reads the current event wire format.
+#[allow(deprecated)]
 #[contractimpl]
 impl MilestoneEscrow {
     // ── yield-rate management ─────────────────────────────────────────────────
@@ -6114,6 +6177,9 @@ impl MilestoneEscrow {
 //   • Every action emits a structured on-chain event so that off-chain
 //     indexers, auditors, and the parties involved receive an immutable record.
 
+// Deferred pending coordinated migration to #[contractevent] — see
+// escrow-backend's poller.ts, which reads the current event wire format.
+#[allow(deprecated)]
 #[contractimpl]
 impl MilestoneEscrow {
     // ── emergency multisig overrides ──────────────────────────────────────────

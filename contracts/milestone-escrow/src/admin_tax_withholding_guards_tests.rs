@@ -42,7 +42,7 @@ fn first_milestone_status(_env: &Env, client: &MilestoneEscrowClient<'_>) -> Mil
 fn taxwh_event_count(env: &Env) -> u32 {
     let topic_val: Val = symbol_short!("taxwh").into_val(env);
     let mut count = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == topic_val.get_payload() {
                 count += 1;
@@ -53,7 +53,7 @@ fn taxwh_event_count(env: &Env) -> u32 {
 }
 
 fn last_taxwh_event(env: &Env) -> TaxWithholdingDeductionsEvent {
-    let events = env.events().all();
+    let events = crate::all_event_tuples(env);
     let last = events.last().unwrap();
     let topic: Symbol = last.1.get(0).unwrap().try_into_val(env).unwrap();
     assert_eq!(topic, Symbol::new(env, "taxwh"));
@@ -168,7 +168,7 @@ fn admin_tax_rejects_empty_contract_balance() {
 
     // Drain the escrow so the fund balance is zero.
     let token_client = token::Client::new(&env, &token_contract_id);
-    token_client.transfer(&contract_id, &Address::generate(&env), &1_000_i128);
+    token_client.transfer(&contract_id, Address::generate(&env), &1_000_i128);
 
     assert_eq!(
         client.try_admin_tax_withholding_deductions(&admin_addr, &0u32, &1000u32),
