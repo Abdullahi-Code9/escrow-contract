@@ -1,8 +1,8 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::{
-    symbol_short, testutils::Events, testutils::MockAuth, testutils::MockAuthInvoke, token, vec,
-    Address, Env, FromVal, IntoVal, Symbol, TryIntoVal, Val,
+    symbol_short, testutils::MockAuth, testutils::MockAuthInvoke, token, vec, Address, Env,
+    FromVal, IntoVal, Symbol, TryIntoVal, Val,
 };
 
 #[test]
@@ -66,7 +66,8 @@ fn successful_split_emits_complete_event_payload() {
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
     let split = client.milestone_time_extensions(&101, &1, &2);
-    let event = env.events().all().last().unwrap();
+    let all_events = crate::all_event_tuples(&env);
+    let event = all_events.last().unwrap();
     let topic: Symbol = event.1.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic, Symbol::new(&env, "m_ext"));
     assert_eq!(
@@ -381,7 +382,7 @@ fn test_time_extensions_consent_emits_event_naming_both_signers() {
 
     let topic: Val = symbol_short!("m_extcns").into_val(&env);
     let mut found = false;
-    for e in env.events().all().iter() {
+    for e in crate::all_event_tuples(&env).iter() {
         if let Some(t) = e.1.get(0) {
             if t.get_payload() == topic.get_payload() {
                 found = true;

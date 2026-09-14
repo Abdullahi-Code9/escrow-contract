@@ -60,7 +60,7 @@ fn initialised_escrow(env: &Env) -> (MilestoneEscrowClient<'_>, Address) {
 fn pause_event_count(env: &Env) -> u32 {
     let topic_val: Val = symbol_short!("pause").into_val(env);
     let mut count = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == topic_val.get_payload() {
                 count += 1;
@@ -72,7 +72,7 @@ fn pause_event_count(env: &Env) -> u32 {
 
 /// Return the body of the most recently emitted `pause` event.
 fn last_pause_event(env: &Env) -> EscrowPausedEvent {
-    let events = env.events().all();
+    let events = crate::all_event_tuples(env);
     let last = events.last().unwrap();
     let topic: soroban_sdk::Symbol = last.1.get(0).unwrap().try_into_val(env).unwrap();
     assert_eq!(topic, soroban_sdk::Symbol::new(env, "pause"));
@@ -158,7 +158,7 @@ fn pause_is_idempotent_when_already_paused() {
 
     // First pause — the happy path. The event tally is read before the
     // storage helpers below: they go through env.as_contract, and
-    // env.events().all() reports the most recent invocation rather than a
+    // crate::all_event_tuples(&env) reports the most recent invocation rather than a
     // running total.
     assert_eq!(client.try_admin_pause_escrow(&admin), Ok(Ok(())));
     assert_eq!(pause_event_count(&env), 1);

@@ -8,8 +8,7 @@ mod emergency_pause_admin_override_tests;
 mod emergency_pause_test;
 use soroban_sdk::{
     contract, contractimpl, contracttype, testutils::Address as _, testutils::EnvTestConfig,
-    testutils::Events, testutils::Ledger, vec, Address, Env, FromVal, IntoVal, Symbol, TryIntoVal,
-    Val,
+    testutils::Ledger, vec, Address, Env, FromVal, IntoVal, Symbol, TryIntoVal, Val,
 };
 
 #[path = "admin_override_refund_tests.rs"]
@@ -1298,7 +1297,7 @@ fn test_resolve_dispute_emits_structured_event() {
     let resolve_topic: Symbol = symbol_short!("resolve");
     let resolve_topic_val: Val = resolve_topic.into_val(&env);
     let mut resolve_events = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == resolve_topic_val.get_payload() {
                 resolve_events += 1;
@@ -1369,7 +1368,7 @@ fn test_resolve_dispute_paid_amount_reflects_capped_transfer() {
     let resolve_topic: Symbol = symbol_short!("resolve");
     let resolve_topic_val: Val = resolve_topic.into_val(&env);
     let mut matched = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == resolve_topic_val.get_payload() {
                 matched += 1;
@@ -1498,7 +1497,7 @@ fn test_fund_emits_structured_event() {
 
     let fund_topic_val: Val = symbol_short!("fund").into_val(&env);
     let mut fund_events = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == fund_topic_val.get_payload() {
                 fund_events += 1;
@@ -1556,14 +1555,16 @@ fn test_failed_fund_does_not_emit_fund_event() {
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
 
     let fund_topic_val: Val = symbol_short!("fund").into_val(&env);
-    let fund_events = env.events().all().iter().fold(0u32, |acc, event| {
-        if let Some(topic) = event.1.get(0) {
-            if topic.get_payload() == fund_topic_val.get_payload() {
-                return acc + 1;
+    let fund_events = crate::all_event_tuples(&env)
+        .iter()
+        .fold(0u32, |acc, event| {
+            if let Some(topic) = event.1.get(0) {
+                if topic.get_payload() == fund_topic_val.get_payload() {
+                    return acc + 1;
+                }
             }
-        }
-        acc
-    });
+            acc
+        });
     assert_eq!(fund_events, 0);
 }
 
@@ -3287,7 +3288,7 @@ fn test_multisig_admin_override_release_emits_event() {
 
     let topic_val: Val = symbol_short!("msadmrel").into_val(&env);
     let mut found = false;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == topic_val.get_payload() {
                 found = true;
@@ -3319,7 +3320,7 @@ fn test_multisig_admin_override_refund_emits_event() {
 
     let topic_val: Val = symbol_short!("msadmref").into_val(&env);
     let mut found = false;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == topic_val.get_payload() {
                 found = true;
@@ -4273,7 +4274,7 @@ fn test_approve_milestone_emits_event() {
 
     let approve_topic: Symbol = symbol_short!("approve");
     let approve_topic_val: Val = approve_topic.into_val(&env);
-    let approve_count = env.events().all().iter().fold(0u32, |acc, e| {
+    let approve_count = crate::all_event_tuples(&env).iter().fold(0u32, |acc, e| {
         if let Some(topic) = e.1.get(0) {
             if topic.get_payload() == approve_topic_val.get_payload() {
                 return acc + 1;
@@ -6416,7 +6417,7 @@ fn test_add_whitelisted_token_emits_event() {
 
     let wtok_topic: Val = symbol_short!("wtok").into_val(&env);
     let mut wtok_events = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == wtok_topic.get_payload() {
                 wtok_events += 1;
@@ -6466,14 +6467,16 @@ fn test_add_whitelisted_token_failed_does_not_emit_event() {
     let _ = client.try_add_whitelisted_token(&admin_addr, &token1);
 
     let wtok_topic: Val = symbol_short!("wtok").into_val(&env);
-    let wtok_count = env.events().all().iter().fold(0u32, |acc, event| {
-        if let Some(topic) = event.1.get(0) {
-            if topic.get_payload() == wtok_topic.get_payload() {
-                return acc + 1;
+    let wtok_count = crate::all_event_tuples(&env)
+        .iter()
+        .fold(0u32, |acc, event| {
+            if let Some(topic) = event.1.get(0) {
+                if topic.get_payload() == wtok_topic.get_payload() {
+                    return acc + 1;
+                }
             }
-        }
-        acc
-    });
+            acc
+        });
     assert_eq!(wtok_count, 0, "failed call must not emit wtok event");
 }
 
@@ -6992,7 +6995,7 @@ fn test_platform_fee_allocation_admin_override_unlocks_locked_allocation() {
 fn pf_ovr_event_count(env: &Env) -> u32 {
     let topic_val: Val = symbol_short!("pf_ovr").into_val(env);
     let mut count = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == topic_val.get_payload() {
                 count += 1;
@@ -7004,7 +7007,7 @@ fn pf_ovr_event_count(env: &Env) -> u32 {
 
 /// Parse the most recent event, asserting it is a `pf_ovr` event.
 fn last_pf_ovr_event(env: &Env) -> PlatformFeeAllocationOverrideEvent {
-    let events = env.events().all();
+    let events = crate::all_event_tuples(env);
     let last = events.last().unwrap();
     let topic: Symbol = last.1.get(0).unwrap().try_into_val(env).unwrap();
     assert_eq!(topic, symbol_short!("pf_ovr"));
@@ -7653,7 +7656,7 @@ fn test_payment_streaming_milestones_emits_event() {
     assert_eq!(split.first, 500);
     assert_eq!(split.second, 500);
 
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     let p_stream_topic: Symbol = symbol_short!("p_stream");
     let p_stream_topic_val: Val = p_stream_topic.into_val(&env);
 
@@ -7735,7 +7738,7 @@ fn test_tax_withholding_deductions_emits_event() {
     assert_eq!(record.gross_amount, record.tax_amount + record.net_amount);
 
     let tax_topic: Val = symbol_short!("taxwith").into_val(&env);
-    assert!(env.events().all().iter().any(|event| {
+    assert!(crate::all_event_tuples(&env).iter().any(|event| {
         event
             .1
             .get(0)
@@ -7889,7 +7892,7 @@ fn test_tax_withholding_deductions_terminal_milestone_fails_without_event() {
     let result = client.try_tax_withholding_deductions(&0_u32, &2_500_u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
     let tax_topic: Val = symbol_short!("taxwith").into_val(&env);
-    assert!(!env.events().all().iter().any(|event| {
+    assert!(!crate::all_event_tuples(&env).iter().any(|event| {
         event
             .1
             .get(0)
@@ -8833,7 +8836,7 @@ fn test_multisig_approve_emits_structured_event() {
     let topic: Symbol = symbol_short!("msigappr");
     let topic_val: Val = topic.into_val(&env);
     let mut matched = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(t) = event.1.get(0) {
             if t.get_payload() == topic_val.get_payload() {
                 matched += 1;
@@ -10086,7 +10089,7 @@ fn test_milestone_time_extensions_emits_event() {
     assert_eq!(split.first, 500);
     assert_eq!(split.second, 500);
 
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     let m_ext_topic: Symbol = symbol_short!("m_ext");
     let m_ext_topic_val: Val = m_ext_topic.into_val(&env);
 
@@ -10123,7 +10126,7 @@ fn test_milestone_time_extensions_zero_elapsed_emits_event() {
     assert_eq!(split.first, 0);
     assert_eq!(split.second, 1_000);
 
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     let m_ext_topic: Symbol = symbol_short!("m_ext");
     let m_ext_topic_val: Val = m_ext_topic.into_val(&env);
 
@@ -10160,7 +10163,7 @@ fn test_milestone_time_extensions_full_elapsed_emits_event() {
     assert_eq!(split.first, 1_000);
     assert_eq!(split.second, 0);
 
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     let m_ext_topic: Symbol = symbol_short!("m_ext");
     let m_ext_topic_val: Val = m_ext_topic.into_val(&env);
 
@@ -10553,7 +10556,7 @@ fn test_milestone_time_extensions_positive_balance_succeeds_and_emits_event() {
     assert_eq!(split.first + split.second, 600);
 
     // Verify the event was published
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     assert!(!events.is_empty(), "expected at least one event");
     let last = events.last().unwrap();
     let topic: Symbol = last.1.get(0).unwrap().try_into_val(&env).unwrap();
@@ -10583,7 +10586,7 @@ fn test_multisig_transfer_admin_emits_event() {
     assert_eq!(total, 300);
 
     // Verify the event was published
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     assert!(!events.is_empty(), "expected at least one event");
     let last = events.last().unwrap();
     let topic: Symbol = last.1.get(0).unwrap().try_into_val(&env).unwrap();
@@ -10607,7 +10610,7 @@ fn test_multisig_transfer_admin_event_fields_are_correct() {
     assert_eq!(allocations.get(1).unwrap(), 250);
 
     // Verify event topic
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     let last = events.last().unwrap();
     let topic: Symbol = last.1.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic, Symbol::new(&env, "msigtrx"));
@@ -10627,7 +10630,7 @@ fn test_multisig_transfer_admin_single_party_emits_event() {
     assert_eq!(allocations.len(), 1);
     assert_eq!(allocations.get(0).unwrap(), 500);
 
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     assert!(!events.is_empty());
     let last = events.last().unwrap();
     let topic: Symbol = last.1.get(0).unwrap().try_into_val(&env).unwrap();
@@ -10648,7 +10651,7 @@ fn test_multisig_transfer_admin_zero_total_emits_no_event() {
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 
     // No events should have been emitted for a rejected call.
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     assert!(events.is_empty(), "no events expected on failed call");
 }
 
@@ -10674,7 +10677,7 @@ fn test_cancel_escrow_succeeds_with_positive_balance() {
     client.cancel_escrow(&client_addr);
     let approval_topic_val: Val = symbol_short!("cxlappr").into_val(&env);
     let mut approval_events = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == approval_topic_val.get_payload() {
                 approval_events += 1;
@@ -10691,7 +10694,7 @@ fn test_cancel_escrow_succeeds_with_positive_balance() {
     client.cancel_escrow(&freelancer_addr);
     let cancel_topic_val: Val = symbol_short!("cancel").into_val(&env);
     let mut cancel_events = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == cancel_topic_val.get_payload() {
                 cancel_events += 1;
@@ -10926,7 +10929,7 @@ fn test_cancel_escrow_emits_structured_event() {
     let cancel_topic: Symbol = symbol_short!("cancel");
     let cancel_topic_val: Val = cancel_topic.into_val(&env);
     let mut cancel_events = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == cancel_topic_val.get_payload() {
                 cancel_events += 1;
@@ -10962,7 +10965,7 @@ fn test_cancel_escrow_freelancer_can_cancel() {
     client.cancel_escrow(&freelancer_addr);
     let approval_topic_val: Val = symbol_short!("cxlappr").into_val(&env);
     let mut approval_events = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == approval_topic_val.get_payload() {
                 approval_events += 1;
@@ -10974,7 +10977,7 @@ fn test_cancel_escrow_freelancer_can_cancel() {
     client.cancel_escrow(&client_addr);
     let cancel_topic_val: Val = symbol_short!("cancel").into_val(&env);
     let mut cancel_events = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == cancel_topic_val.get_payload() {
                 cancel_events += 1;
@@ -11062,14 +11065,16 @@ fn test_cancel_escrow_empty_balance_emits_no_event() {
 
     // No cancel events should have been emitted.
     let cancel_topic_val: Val = symbol_short!("cancel").into_val(&env);
-    let cancel_events = env.events().all().iter().fold(0u32, |acc, event| {
-        if let Some(topic) = event.1.get(0) {
-            if topic.get_payload() == cancel_topic_val.get_payload() {
-                return acc + 1;
+    let cancel_events = crate::all_event_tuples(&env)
+        .iter()
+        .fold(0u32, |acc, event| {
+            if let Some(topic) = event.1.get(0) {
+                if topic.get_payload() == cancel_topic_val.get_payload() {
+                    return acc + 1;
+                }
             }
-        }
-        acc
-    });
+            acc
+        });
     assert_eq!(cancel_events, 0);
 }
 
@@ -11122,7 +11127,7 @@ fn test_tax_withholding_deductions_zero_balance_fails() {
 
     // Empty the contract balance by transferring all tokens out
     let token_client = token::Client::new(&env, &token_contract_id);
-    token_client.transfer(&contract_id, &Address::generate(&env), &1000_i128);
+    token_client.transfer(&contract_id, Address::generate(&env), &1000_i128);
 
     // Call tax_withholding_deductions (should fail with InvalidAmount)
     let res = client.try_tax_withholding_deductions(&0u32, &1000u32);
@@ -11140,7 +11145,7 @@ fn test_admin_tax_withholding_deductions_zero_balance_fails() {
 
     // Empty the contract balance by transferring all tokens out
     let token_client = token::Client::new(&env, &token_contract_id);
-    token_client.transfer(&contract_id, &Address::generate(&env), &1000_i128);
+    token_client.transfer(&contract_id, Address::generate(&env), &1000_i128);
 
     // Call admin_tax_withholding_deductions (should fail with InvalidAmount)
     let res = client.try_admin_tax_withholding_deductions(&admin_addr, &0u32, &1000u32);
@@ -11159,11 +11164,11 @@ fn test_admin_tax_withholding_deductions_calculates_without_storage_lock() {
 
     assert_eq!(result, (1_000, 250, 750));
 
-    // Read the event tally first: env.events().all() reflects only the most
+    // Read the event tally first: crate::all_event_tuples(&env) reflects only the most
     // recent contract invocation, and the env.as_contract read below counts
     // as one, which would clear the buffer before it could be inspected.
     let tax_topic: Val = symbol_short!("taxwh").into_val(&env);
-    assert!(env.events().all().iter().any(|event| {
+    assert!(crate::all_event_tuples(&env).iter().any(|event| {
         event
             .1
             .get(0)
@@ -11409,7 +11414,7 @@ fn test_set_platform_fee_allocation_emits_structured_event() {
     let pf_set_topic: Symbol = symbol_short!("pf_set");
     let pf_set_topic_val: Val = pf_set_topic.into_val(&env);
     let mut pf_set_events = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == pf_set_topic_val.get_payload() {
                 pf_set_events += 1;
@@ -11462,7 +11467,7 @@ fn test_lock_platform_fee_allocation_emits_structured_event() {
     let pf_lock_topic: Symbol = symbol_short!("pf_lock");
     let pf_lock_topic_val: Val = pf_lock_topic.into_val(&env);
     let mut pf_lock_events = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == pf_lock_topic_val.get_payload() {
                 pf_lock_events += 1;
@@ -11518,7 +11523,7 @@ fn test_pf_alloc_admin_override_emits_structured_event() {
     let pf_ovr_topic: Symbol = symbol_short!("pf_ovr");
     let pf_ovr_topic_val: Val = pf_ovr_topic.into_val(&env);
     let mut pf_ovr_events = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == pf_ovr_topic_val.get_payload() {
                 pf_ovr_events += 1;
@@ -11577,7 +11582,7 @@ fn test_calculate_platform_fee_split_emits_structured_event() {
     let pf_split_topic: Symbol = symbol_short!("pf_split");
     let pf_split_topic_val: Val = pf_split_topic.into_val(&env);
     let mut pf_split_events = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == pf_split_topic_val.get_payload() {
                 pf_split_events += 1;
@@ -11631,14 +11636,16 @@ fn test_set_platform_fee_allocation_fails_does_not_emit_event() {
 
     let pf_set_topic: Symbol = symbol_short!("pf_set");
     let pf_set_topic_val: Val = pf_set_topic.into_val(&env);
-    let pf_set_count = env.events().all().iter().fold(0u32, |acc, event| {
-        if let Some(topic) = event.1.get(0) {
-            if topic.get_payload() == pf_set_topic_val.get_payload() {
-                return acc + 1;
+    let pf_set_count = crate::all_event_tuples(&env)
+        .iter()
+        .fold(0u32, |acc, event| {
+            if let Some(topic) = event.1.get(0) {
+                if topic.get_payload() == pf_set_topic_val.get_payload() {
+                    return acc + 1;
+                }
             }
-        }
-        acc
-    });
+            acc
+        });
     assert_eq!(pf_set_count, 0, "should not emit pf_set event on failure");
 }
 
@@ -11683,7 +11690,7 @@ fn test_platform_fee_split_rounds_to_zero() {
     let pf_split_topic: Symbol = symbol_short!("pf_split");
     let pf_split_topic_val: Val = pf_split_topic.into_val(&env);
     let mut pf_split_events = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(&env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == pf_split_topic_val.get_payload() {
                 pf_split_events += 1;
@@ -12012,7 +12019,7 @@ fn test_cancel_escrow_emits_exactly_one_event() {
 
     let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cancel");
     let topic_val: Val = topic.into_val(&env);
-    let count = env.events().all().iter().fold(0u32, |acc, e| {
+    let count = crate::all_event_tuples(&env).iter().fold(0u32, |acc, e| {
         if let Some(t) = e.1.get(0) {
             if t.get_payload() == topic_val.get_payload() {
                 return acc + 1;
@@ -12039,7 +12046,7 @@ fn test_cancel_escrow_event_contains_correct_caller() {
     let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cancel");
     let topic_val: Val = topic.into_val(&env);
     let mut found_caller: Option<Address> = None;
-    for e in env.events().all().iter() {
+    for e in crate::all_event_tuples(&env).iter() {
         if let Some(t) = e.1.get(0) {
             if t.get_payload() == topic_val.get_payload() {
                 let event: CancelEscrowInitiatedEvent = soroban_sdk::FromVal::from_val(&env, &e.2);
@@ -12457,7 +12464,7 @@ fn test_interest_yield_split_refund_emits_event() {
 
     let topic: Val = Symbol::new(&env, "iyspltref").into_val(&env);
     let mut found = false;
-    for e in env.events().all().iter() {
+    for e in crate::all_event_tuples(&env).iter() {
         if let Some(t) = e.1.get(0) {
             if t.get_payload() == topic.get_payload() {
                 found = true;
@@ -12671,14 +12678,16 @@ fn test_cancel_escrow_split_refund_emits_event() {
     client.cancel_escrow_split_refund(&1_000_i128, &6_000_u32, &4_000_u32);
 
     let topic_val: Val = symbol_short!("cxlspref").into_val(&env);
-    let count = env.events().all().iter().fold(0u32, |acc, event| {
-        if let Some(topic) = event.1.get(0) {
-            if topic.get_payload() == topic_val.get_payload() {
-                return acc + 1;
+    let count = crate::all_event_tuples(&env)
+        .iter()
+        .fold(0u32, |acc, event| {
+            if let Some(topic) = event.1.get(0) {
+                if topic.get_payload() == topic_val.get_payload() {
+                    return acc + 1;
+                }
             }
-        }
-        acc
-    });
+            acc
+        });
     assert_eq!(count, 1, "expected exactly one cxlspref event");
 }
 
@@ -12690,7 +12699,7 @@ fn test_cancel_escrow_split_refund_event_payload_correct() {
 
     let allocation = client.cancel_escrow_split_refund(&1_001_i128, &2_500_u32, &7_500_u32);
 
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     let last = events.last().unwrap();
     let topic: Symbol = last.1.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic, symbol_short!("cxlspref"));

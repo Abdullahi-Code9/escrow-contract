@@ -2,7 +2,6 @@
 use super::*;
 use crate::{CancelApprovalRevokedEvent, CancelEscrowInitiatedEvent, DataKey, Error};
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::testutils::Events as _;
 use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, Symbol, TryIntoVal};
 
 #[test]
@@ -37,7 +36,7 @@ fn test_cancel_escrow_sets_lock_and_emits_event() {
     client.cancel_escrow(&freelancer_addr);
 
     // Verify the final event is the "cancel" event with full details.
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     let last_event = events.last().unwrap();
     let topic: Symbol = last_event.1.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic, symbol_short!("cancel"));
@@ -187,7 +186,7 @@ fn test_revoke_cancel_approval_emits_event() {
 
     client.revoke_cancel_approval(&client_addr);
 
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     let last_event = events.last().unwrap();
     let topic: Symbol = last_event.1.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic, symbol_short!("cancelrev"));

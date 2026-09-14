@@ -12,8 +12,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _, testutils::EnvTestConfig, testutils::Events, token, vec, Address, Env,
-    FromVal, IntoVal, Val,
+    testutils::Address as _, testutils::EnvTestConfig, token, vec, Address, Env, FromVal, IntoVal,
+    Val,
 };
 
 // ── fixtures ────────────────────────────────────────────────────────────────
@@ -245,7 +245,7 @@ fn test_pause_emits_a_state_change_event() {
     let topic: Val = symbol_short!("empause").into_val(&env);
     let mut found = false;
 
-    for e in env.events().all().iter() {
+    for e in crate::all_event_tuples(&env).iter() {
         if let Some(t) = e.1.get(0) {
             if t.get_payload() == topic.get_payload() {
                 found = true;
@@ -273,7 +273,7 @@ fn test_rejected_transitions_emit_no_event() {
     let paused_topic: Val = symbol_short!("empause").into_val(&env);
     let unpaused_topic: Val = symbol_short!("emunpause").into_val(&env);
 
-    for e in env.events().all().iter() {
+    for e in crate::all_event_tuples(&env).iter() {
         if let Some(t) = e.1.get(0) {
             assert_ne!(
                 t.get_payload(),
@@ -773,7 +773,7 @@ fn test_allocation_emits_an_event_matching_the_returned_vector() {
     let topic: Val = symbol_short!("epalloc").into_val(&env);
     let mut found = false;
 
-    for e in env.events().all().iter() {
+    for e in crate::all_event_tuples(&env).iter() {
         if let Some(t) = e.1.get(0) {
             if t.get_payload() == topic.get_payload() {
                 found = true;
@@ -800,7 +800,7 @@ fn test_allocation_emits_no_event_when_rejected() {
     let _ = escrow.try_emergency_pause_allocation(&0_i128, &vec![&env, 1_i128]);
 
     let topic: Val = symbol_short!("epalloc").into_val(&env);
-    for e in env.events().all().iter() {
+    for e in crate::all_event_tuples(&env).iter() {
         if let Some(t) = e.1.get(0) {
             assert_ne!(t.get_payload(), topic.get_payload());
         }

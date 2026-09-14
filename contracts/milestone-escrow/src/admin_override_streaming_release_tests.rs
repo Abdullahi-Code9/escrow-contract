@@ -9,13 +9,12 @@
 use super::*;
 use crate::test::setup_funded_escrow;
 use crate::{AdminOverrideStreamingReleaseEvent, Error, MilestoneStatus};
-use soroban_sdk::testutils::Events as _;
 use soroban_sdk::{symbol_short, token, vec, Address, Env, FromVal, IntoVal, Val};
 
 fn admstrm_event_count(env: &Env) -> u32 {
     let topic_val: Val = symbol_short!("admstrm").into_val(env);
     let mut count = 0u32;
-    for event in env.events().all().iter() {
+    for event in crate::all_event_tuples(env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == topic_val.get_payload() {
                 count += 1;
@@ -73,7 +72,7 @@ fn test_admin_override_streaming_release_emits_event() {
 
     client.admin_override_streaming_release(&admin_addr, &0u32, &25_i128, &100_i128);
 
-    let events = env.events().all();
+    let events = crate::all_event_tuples(&env);
     let ev = AdminOverrideStreamingReleaseEvent::from_val(&env, &events.last().unwrap().2);
     assert_eq!(ev.admin, admin_addr);
     assert_eq!(ev.milestone_index, 0);
