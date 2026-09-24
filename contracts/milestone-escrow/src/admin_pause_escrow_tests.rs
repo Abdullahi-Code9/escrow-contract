@@ -197,3 +197,16 @@ fn pause_sets_flag_emits_event_and_clears_lock() {
     // Lock not left behind.
     assert!(!is_lock_held(&env, &contract_id));
 }
+
+#[test]
+fn pause_touches_minimal_storage_footprint() {
+    let env = test_env();
+    let (client, admin) = initialised_escrow(&env);
+    let contract_id = client.address.clone();
+
+    // Verify EpLk is not mutated by admin_pause_escrow
+    assert!(!is_lock_held(&env, &contract_id));
+    assert_eq!(client.try_admin_pause_escrow(&admin), Ok(Ok(())));
+    assert!(is_paused(&env, &contract_id));
+    assert!(!is_lock_held(&env, &contract_id));
+}
