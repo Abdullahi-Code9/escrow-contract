@@ -29,6 +29,8 @@ mod multisig_admin_override_refund_tests;
 mod multisig_split_refund_tests;
 #[path = "multisig_transfer_admin_tests.rs"]
 mod multisig_transfer_admin_tests;
+#[path = "platform_fee_allocation_no_mutation_tests.rs"]
+mod platform_fee_allocation_no_mutation_tests;
 #[path = "tax_withholding_tests.rs"]
 mod tax_withholding_tests;
 
