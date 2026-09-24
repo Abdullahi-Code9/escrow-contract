@@ -3667,11 +3667,14 @@ impl MilestoneEscrow {
         env.deployer()
             .update_current_contract(ContractExecutable::Wasm(new_wasm_hash));
 
-        let current: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(1);
-        let next = current.checked_add(1).ok_or(Error::InvalidAmount)?;
+        // Single read-modify-write: replaces the separate get + set with one
+        // storage operation on DataKey::Version, reducing the key's ledger
+        // footprint from two accesses to one.
         env.storage()
             .instance()
-            .set(&DataKey::Version, &next);
+            .try_update(&DataKey::Version, |v: Option<u32>| {
+                v.unwrap_or(1).checked_add(1).ok_or(Error::InvalidAmount)
+            })?;
 
         Ok(())
     }
