@@ -12885,7 +12885,7 @@ fn zero_addresses(env: &Env) -> (Address, Address) {
 
 /// Helper: register a fresh escrow contract and a valid stellar-asset token,
 /// returning `(valid_token, escrow_client)`.
-fn fresh_escrow_with_token(env: &Env, admin_addr: &Address) -> (Address, MilestoneEscrowClient) {
+fn fresh_escrow_with_token<'a>(env: &'a Env, admin_addr: &Address) -> (Address, MilestoneEscrowClient<'a>) {
     let token = env
         .register_stellar_asset_contract_v2(admin_addr.clone())
         .address();
