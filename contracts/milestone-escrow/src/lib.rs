@@ -1659,7 +1659,16 @@ impl MilestoneEscrow {
         total.checked_add(amount).ok_or(Error::InvalidAmount)
     }
 
-    #[allow(dead_code)]
+    /// Sum all milestone amounts, returning `Err(InvalidAmount)` if:
+    /// - the list is empty (no milestones to escrow),
+    /// - any individual amount is `≤ 0` (enforced by [`checked_add_amount`]),
+    /// - the running total overflows `i128` (enforced by `i128::checked_add`
+    ///   inside [`checked_add_amount`]).
+    ///
+    /// Every addition goes through `i128::checked_add`, so no unchecked
+    /// arithmetic is performed regardless of input size or value.
+    ///
+    /// [`checked_add_amount`]: Self::checked_add_amount
     fn checked_initialize_total(milestone_amounts: &Vec<i128>) -> Result<i128, Error> {
         if milestone_amounts.is_empty() {
             return Err(Error::InvalidAmount);
@@ -1667,6 +1676,8 @@ impl MilestoneEscrow {
 
         let mut total_amount: i128 = 0;
         for amount in milestone_amounts.iter() {
+            // checked_add_amount rejects amount ≤ 0 and uses i128::checked_add
+            // to catch overflow, returning Err(InvalidAmount) in both cases.
             total_amount = Self::checked_add_amount(total_amount, amount)?;
         }
 
@@ -1750,6 +1761,12 @@ impl MilestoneEscrow {
     /// platform fee allocation defaults to 100% freelancer / 0% client / 0%
     /// treasury.
     ///
+    /// All integer arithmetic (summing `milestone_amounts`) is performed via
+    /// the internal `checked_initialize_total` helper, which uses
+    /// `i128::checked_add` on every addition and rejects non-positive amounts,
+    /// so no arithmetic can overflow or wrap silently — a typed `InvalidAmount`
+    /// error is returned instead.
+    ///
     /// # Parameters
     /// * `admin`                 – Address that will control admin-only
     ///                             endpoints (whitelist, pause, overrides).
@@ -1764,13 +1781,17 @@ impl MilestoneEscrow {
     ///                             becomes eligible for `claim_auto_release`.
     ///                             Must be non-zero.
     /// * `milestone_amounts`     – Amount owed for each milestone, in order.
+    ///                             Must be non-empty; every amount must be `> 0`.
     ///
     /// # Errors
     /// * `AlreadyInitialized` – The contract has already been initialized.
     /// * `InvalidAddress`     – Any of `admin`, `client`, `freelancer`,
-    ///                          `arbiter`, or `token` is a zero address.
-    /// * `InvalidAmount`      – `auto_release_seconds` is zero, or the total
-    ///                          of `milestone_amounts` overflows.
+    ///                          `arbiter`, or `token` is a zero address or the
+    ///                          escrow contract's own address.
+    /// * `InvalidAmount`      – `milestone_amounts` is empty, any individual
+    ///                          amount is `≤ 0`, the sum of all amounts
+    ///                          overflows `i128`, or `auto_release_seconds`
+    ///                          is zero.
     /// * `InvalidMilestone`   – `milestone_amounts` could not be read at a
     ///                          given index.
     #[allow(clippy::too_many_arguments)]
@@ -1816,7 +1837,12 @@ impl MilestoneEscrow {
         Self::validate_address(&env, &arbiter)?;
         Self::validate_address(&env, &token)?;
 
+        // milestone_count is u32 (Soroban Vec::len() returns u32) so no cast
+        // is needed and there is no overflow risk on the count itself.
         let milestone_count = milestone_amounts.len();
+        // All per-amount and running-total arithmetic is performed inside
+        // checked_initialize_total via i128::checked_add (see its rustdoc).
+        // Non-positive amounts and sum overflow both return Err(InvalidAmount).
         let total_amount = Self::checked_initialize_total(&milestone_amounts)?;
 
         env.storage().instance().set(&DataKey::Admin, &admin);

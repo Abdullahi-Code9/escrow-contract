@@ -12855,3 +12855,219 @@ fn test_propose_admin_transfer_happy_path() {
     assert_eq!(pending.new_admin, new_admin);
     assert_eq!(pending.proposal_id, 42u32);
 }
+
+// ============================================================================
+// initialize — checked arithmetic contract (#562)
+//
+// Every integer operation in initialize goes through checked_initialize_total
+// → checked_add_amount → i128::checked_add. The tests below assert the exact
+// typed error returned on each overflow/underflow boundary and verify that no
+// partial write survives a failed call.
+// ============================================================================
+
+/// A single milestone with `i128::MAX` is a valid positive amount: it does not
+/// overflow on its own (0 + i128::MAX == i128::MAX exactly).  Verifies that the
+/// checked helper does not erroneously reject extreme-but-valid inputs.
+#[test]
+fn test_initialize_single_i128_max_amount_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // i128::MAX is positive — checked_add_amount(0, i128::MAX) should succeed.
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &vec![&env, i128::MAX],
+    );
+    assert_eq!(result, Ok(Ok(())), "single i128::MAX milestone must be accepted");
+}
+
+/// Two milestones each with `i128::MAX` overflow the running total on the
+/// second addition. Verifies that `checked_add` catches this and returns
+/// `InvalidAmount` rather than wrapping or panicking.
+#[test]
+fn test_initialize_two_i128_max_amounts_overflow_returns_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &vec![&env, i128::MAX, i128::MAX],
+    );
+    assert_eq!(
+        result,
+        Err(Ok(Error::InvalidAmount)),
+        "i128::MAX + i128::MAX must return InvalidAmount, not panic or wrap"
+    );
+
+    // No partial state must survive the failed call.
+    env.as_contract(&contract_id, || {
+        assert!(
+            !env.storage().instance().has(&DataKey::Version),
+            "Version key must not be written after a failed initialize"
+        );
+        assert!(
+            !env.storage().persistent().has(&DataKey::Admin),
+            "persistent Admin key must not be written after a failed initialize"
+        );
+    });
+}
+
+/// `i128::MAX` as the first milestone followed by `1` also overflows — the
+/// overflow does not require two equal extremes. Verifies the guard applies
+/// to the running total, not just to equal-value pairs.
+#[test]
+fn test_initialize_i128_max_plus_one_overflows_returns_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &vec![&env, i128::MAX, 1_i128],
+    );
+    assert_eq!(
+        result,
+        Err(Ok(Error::InvalidAmount)),
+        "i128::MAX + 1 must return InvalidAmount"
+    );
+}
+
+/// A milestone amount of exactly `0` must be rejected with `InvalidAmount`
+/// because `checked_add_amount` requires strictly positive values.
+/// Verifies the `amount <= 0` guard in the helper.
+#[test]
+fn test_initialize_zero_milestone_amount_returns_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &vec![&env, 0_i128],
+    );
+    assert_eq!(
+        result,
+        Err(Ok(Error::InvalidAmount)),
+        "zero milestone amount must return InvalidAmount"
+    );
+
+    // No partial state must survive.
+    env.as_contract(&contract_id, || {
+        assert!(
+            !env.storage().instance().has(&DataKey::Version),
+            "Version key must not be written after a zero-amount initialize"
+        );
+    });
+}
+
+/// A mix of valid and overflowing amounts in a longer list must still be
+/// caught: the checked accumulator must reject the overflow regardless of
+/// how many valid amounts precede it.
+#[test]
+fn test_initialize_overflow_in_middle_of_list_returns_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // 1_000 + 2_000 + i128::MAX + 3_000 overflows at the third element.
+    let amounts = vec![&env, 1_000_i128, 2_000_i128, i128::MAX, 3_000_i128];
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(Error::InvalidAmount)),
+        "overflow anywhere in the list must return InvalidAmount"
+    );
+
+    // No partial milestones must survive.
+    env.as_contract(&contract_id, || {
+        assert!(
+            !env.storage().persistent().has(&DataKey::Milestone(0u32)),
+            "no milestone must be persisted after a failed initialize"
+        );
+    });
+}
