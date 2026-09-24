@@ -31,6 +31,8 @@ mod multisig_split_refund_tests;
 mod multisig_transfer_admin_tests;
 #[path = "tax_withholding_tests.rs"]
 mod tax_withholding_tests;
+#[path = "get_platform_fee_allocation_tests.rs"]
+mod get_platform_fee_allocation_tests;
 
 #[contracttype]
 enum ReentrantTokenDataKey {
