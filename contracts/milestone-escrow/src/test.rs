@@ -10281,6 +10281,47 @@ fn test_escrow_interest_yield_max_rate_succeeds() {
 }
 
 #[test]
+fn test_escrow_interest_yield_emits_one_structured_event() {
+    let env = Env::default();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let principal = 10_000_i128;
+    let annual_rate_bps = 500_i128;
+    let duration_seconds = 31_536_000_i128;
+    let yield_amount =
+        client.escrow_interest_yield(&principal, &annual_rate_bps, &duration_seconds);
+
+    let topic: Val = symbol_short!("intyield").into_val(&env);
+    let events = crate::all_event_tuples(&env);
+    let mut count = 0u32;
+    for event in events.iter() {
+        if let Some(value) = event.1.get(0) {
+            if value.get_payload() == topic.get_payload() {
+                count += 1;
+                let payload = EscrowInterestYieldEvent::from_val(&env, &event.2);
+                assert_eq!(payload.principal, principal);
+                assert_eq!(payload.annual_rate_bps, annual_rate_bps);
+                assert_eq!(payload.duration_seconds, duration_seconds);
+                assert_eq!(payload.yield_amount, yield_amount);
+            }
+        }
+    }
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn test_escrow_interest_yield_error_emits_no_event() {
+    let env = Env::default();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = client.try_escrow_interest_yield(&0_i128, &500_i128, &31_536_000_i128);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert!(crate::all_event_tuples(&env).is_empty());
+}
+
+#[test]
 fn test_admin_accrue_yield_rejects_i128_extremes() {
     let env = Env::default();
     env.mock_all_auths();

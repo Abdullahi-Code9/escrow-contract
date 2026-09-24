@@ -855,6 +855,20 @@ pub struct EscrowInterestYieldConsentSetEvent {
     pub freelancer_share_bps: u32,
 }
 
+/// Emitted by `escrow_interest_yield` on a successful estimate. Carries the
+/// computation inputs and the resulting yield so an indexer can reconstruct the
+/// outcome without recomputing it. `escrow_interest_yield` is a pure estimator
+/// (no caller `Address` in its signature and no persisted state), so the event
+/// records the amounts involved and the resulting yield amount.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowInterestYieldEvent {
+    pub principal: i128,
+    pub annual_rate_bps: i128,
+    pub duration_seconds: i128,
+    pub yield_amount: i128,
+}
+
 /// Emitted by `admin_override_streaming_release` when the admin proportionally
 /// settles a `Disputed` milestone using the streaming/time-extension split.
 #[contracttype]
@@ -4726,9 +4740,14 @@ impl MilestoneEscrow {
             return Err(Error::MultiSigThresholdNotMet);
         }
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Admin, &pending.new_admin);
+        // A proposal that keeps the current admin does not need to rewrite the
+        // Admin ledger entry. This preserves the event and clears the pending
+        // proposal while avoiding a redundant storage write.
+        if old_admin != pending.new_admin {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Admin, &pending.new_admin);
+        }
         env.storage()
             .persistent()
             .remove(&DataKey::PendingAdminTransfer);
@@ -4828,7 +4847,7 @@ impl MilestoneEscrow {
     ///                     intermediate checked multiplication overflows.
     /// * `InvalidRatio`  – `annual_rate_bps` exceeds 10_000 (unsupported).
     pub fn escrow_interest_yield(
-        _env: Env,
+        env: Env,
         principal: i128,
         annual_rate_bps: i128,
         duration_seconds: i128,
@@ -4845,9 +4864,23 @@ impl MilestoneEscrow {
             .checked_mul(SECONDS_PER_YEAR)
             .ok_or(Error::InvalidAmount)?;
 
-        numerator
+        let yield_amount = numerator
             .checked_div(denominator)
-            .ok_or(Error::InvalidAmount)
+            .ok_or(Error::InvalidAmount)?;
+
+        // Publish exactly once on the success path (after validation and the
+        // checked arithmetic), so every error path returns before emitting.
+        env.events().publish(
+            (symbol_short!("intyield"),),
+            EscrowInterestYieldEvent {
+                principal,
+                annual_rate_bps,
+                duration_seconds,
+                yield_amount,
+            },
+        );
+
+        Ok(yield_amount)
     }
 
     /// Initialize or update interest/yield share configuration (unlocked by
