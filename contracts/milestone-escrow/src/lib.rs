@@ -422,6 +422,10 @@ pub struct ApprovedEvent {
 pub struct DisputeRaisedEvent {
     pub milestone_index: u32,
     pub caller: Address,
+    /// The amount of the milestone being disputed, in stroops.
+    pub milestone_amount: i128,
+    /// The resulting milestone status after raising the dispute (always `Disputed`).
+    pub new_status: MilestoneStatus,
 }
 
 #[contracttype]
@@ -2834,6 +2838,8 @@ impl MilestoneEscrow {
             DisputeRaisedEvent {
                 milestone_index,
                 caller,
+                milestone_amount: milestone.amount,
+                new_status: MilestoneStatus::Disputed,
             },
         );
 
@@ -3085,7 +3091,8 @@ impl MilestoneEscrow {
 
         let freelancer_payout = split.first;
         let client_refund = split.second;
-        let client_refund_bps = BPS_SCALE - freelancer_bps;
+        let client_refund_bps = BPS_SCALE.checked_sub(freelancer_bps)
+            .ok_or(Error::InvalidRatio)?;
 
         Ok(RefundAllocation {
             client_refund,
@@ -3896,47 +3903,70 @@ impl MilestoneEscrow {
         result
     }
 
-    pub fn lock_platform_fee_allocation(env: Env, admin: Address) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
+    /// Lock the current platform-fee allocation, preventing further non-override
+/// modifications.  The admin's configuration (client_bps, freelancer_bps,
+/// treasury_bps) is persisted with `locked = true` so that subsequent calls
+/// to non-override endpoints are rejected until an admin override clears the
+/// lock.
+///
+/// # Returns
+/// * `Ok(())` – the allocation was successfully locked.
+/// * `Err(Error::Unauthorized)` – the caller is not the contract admin.
+/// * `Err(Error::PlatformFeeAllocationInProgress)` – a platform-fee
+///   allocation is already locked.
+/// * `Err(Error::EmergencyPauseInProgress)` – an emergency-pause transition
+///   is active.
+/// * `Err(Error::NotInitialized)` – the contract has not been initialized.
+///
+/// # Errors
+/// * `Error::Unauthorized` – caller is not the admin (via `require_admin`).
+/// * `Error::PlatformFeeAllocationInProgress` – lock is already set (via
+///   `assert_platform_fee_allocation_not_locked`).
+/// * `Error::EmergencyPauseInProgress` – emergency pause is in progress (via
+///   `assert_emergency_pause_not_locked`).
+/// * `Error::NotInitialized` – no platform-fee allocation exists (inside the
+///   execution lock guard).
+pub fn lock_platform_fee_allocation(env: Env, admin: Address) -> Result<(), Error> {
+    Self::require_admin(&env, &admin)?;
+    Self::assert_platform_fee_allocation_not_locked(&env)?;
+    Self::assert_emergency_pause_not_locked(&env)?;
 
+    env.storage()
+        .instance()
+        .set(&DataKey::PlatformFeeAllocationLock, &true);
+
+    let result = (|| {
+        let mut current: PlatformFeeAllocation = env
+            .storage()
+            .instance()
+            .get(&DataKey::PlatformFeeAllocation)
+            .ok_or(Error::NotInitialized)?;
+
+        // Emit a structured event so downstream indexers can track
+        // lock state changes without polling storage.
+        env.events().publish(
+            (symbol_short!("pf_lock"),),
+            PlatformFeeAllocationLockedEvent {
+                admin: admin.clone(),
+                client_bps: current.client_bps,
+                freelancer_bps: current.freelancer_bps,
+                treasury_bps: current.treasury_bps,
+            },
+        );
+
+        current.locked = true;
         env.storage()
             .instance()
-            .set(&DataKey::PlatformFeeAllocationLock, &true);
+            .set(&DataKey::PlatformFeeAllocation, &current);
+        Ok(())
+    })();
 
-        let result = (|| {
-            let mut current: PlatformFeeAllocation = env
-                .storage()
-                .instance()
-                .get(&DataKey::PlatformFeeAllocation)
-                .ok_or(Error::NotInitialized)?;
+    env.storage()
+        .instance()
+        .set(&DataKey::PlatformFeeAllocationLock, &false);
 
-            // Emit a structured event so downstream indexers can track
-            // lock state changes without polling storage.
-            env.events().publish(
-                (symbol_short!("pf_lock"),),
-                PlatformFeeAllocationLockedEvent {
-                    admin: admin.clone(),
-                    client_bps: current.client_bps,
-                    freelancer_bps: current.freelancer_bps,
-                    treasury_bps: current.treasury_bps,
-                },
-            );
-
-            current.locked = true;
-            env.storage()
-                .instance()
-                .set(&DataKey::PlatformFeeAllocation, &current);
-            Ok(())
-        })();
-
-        env.storage()
-            .instance()
-            .set(&DataKey::PlatformFeeAllocationLock, &false);
-
-        result
-    }
+    result
+}
 
     /// Admin override that replaces a *locked* platform-fee allocation and
     /// unlocks it in the same step.
