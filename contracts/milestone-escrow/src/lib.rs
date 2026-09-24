@@ -5774,6 +5774,7 @@ impl MilestoneEscrow {
         milestone_index: u32,
         tax_rate_bps: u32,
     ) -> Result<TaxWithholdingRecord, Error> {
+        Self::assert_tax_withholding_not_locked(&env)?;
         let meta = Self::load_job_meta(&env)?;
 
         meta.client.require_auth();
