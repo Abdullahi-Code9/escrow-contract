@@ -12855,3 +12855,266 @@ fn test_propose_admin_transfer_happy_path() {
     assert_eq!(pending.new_admin, new_admin);
     assert_eq!(pending.proposal_id, 42u32);
 }
+
+// ============================================================================
+// initialize — InvalidAddress coverage for every parameter (#561)
+//
+// `validate_address` rejects three kinds of invalid address:
+//   (a) The Stellar zero account  (GAAA…WHF)
+//   (b) The canonical Soroban zero contract (CAAA…BSC4)
+//   (c) The escrow contract's own address
+//
+// The existing test (`test_initialize_zero_address_fails`) only exercises
+// case (a) for the `client` parameter.  The tests below exercise every other
+// parameter and both sentinel values so the documented error table in the
+// rustdoc is fully reachable from the test suite.
+// ============================================================================
+
+/// Helper: build the two canonical invalid addresses used by `validate_address`.
+fn zero_addresses(env: &Env) -> (Address, Address) {
+    let zero_account = Address::from_str(
+        env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+    let zero_contract = Address::from_str(
+        env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    );
+    (zero_account, zero_contract)
+}
+
+/// Helper: register a fresh escrow contract and a valid stellar-asset token,
+/// returning `(valid_token, escrow_client)`.
+fn fresh_escrow_with_token(env: &Env, admin_addr: &Address) -> (Address, MilestoneEscrowClient) {
+    let token = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(env, &contract_id);
+    (token, client)
+}
+
+// ── admin parameter ──────────────────────────────────────────────────────────
+
+/// `admin` = zero account must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_account_as_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (zero_account, _) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let (token, escrow) = fresh_escrow_with_token(&env, &admin_addr);
+
+    let result = escrow.try_initialize(
+        &zero_account,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+/// `admin` = zero contract must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_contract_as_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, zero_contract) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let (token, escrow) = fresh_escrow_with_token(&env, &admin_addr);
+
+    let result = escrow.try_initialize(
+        &zero_contract,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+// ── freelancer parameter ─────────────────────────────────────────────────────
+
+/// `freelancer` = zero account must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_account_as_freelancer_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (zero_account, _) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let (token, escrow) = fresh_escrow_with_token(&env, &admin_addr);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &zero_account,
+        &arbiter_addr,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+/// `freelancer` = zero contract must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_contract_as_freelancer_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, zero_contract) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let (token, escrow) = fresh_escrow_with_token(&env, &admin_addr);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &zero_contract,
+        &arbiter_addr,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+// ── arbiter parameter ────────────────────────────────────────────────────────
+
+/// `arbiter` = zero account must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_account_as_arbiter_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (zero_account, _) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let (token, escrow) = fresh_escrow_with_token(&env, &admin_addr);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &zero_account,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+/// `arbiter` = zero contract must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_contract_as_arbiter_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, zero_contract) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let (token, escrow) = fresh_escrow_with_token(&env, &admin_addr);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &zero_contract,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+// ── token parameter ──────────────────────────────────────────────────────────
+
+/// `token` = zero account must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_account_as_token_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (zero_account, _) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &zero_account,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+/// `token` = zero contract must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_contract_as_token_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, zero_contract) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &zero_contract,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+// ── client parameter (zero contract — the zero account is already covered) ───
+
+/// `client` = zero contract must be rejected with `InvalidAddress`.
+/// (The zero *account* case is covered by the earlier
+/// `test_initialize_zero_address_fails` test.)
+#[test]
+fn test_initialize_zero_contract_as_client_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, zero_contract) = zero_addresses(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let (token, escrow) = fresh_escrow_with_token(&env, &admin_addr);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &zero_contract,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
