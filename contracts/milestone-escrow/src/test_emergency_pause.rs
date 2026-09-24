@@ -12,8 +12,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _, testutils::EnvTestConfig, testutils::Events, vec, Address, Env,
-    FromVal, IntoVal, Val,
+    testutils::Address as _, testutils::EnvTestConfig, token, vec, Address, Env, FromVal, IntoVal,
+    Val,
 };
 
 // ── fixtures ────────────────────────────────────────────────────────────────
@@ -31,7 +31,7 @@ fn bare_contract(env: &Env) -> MilestoneEscrowClient<'_> {
 }
 
 /// A fully initialised, unpaused escrow plus its admin address.
-fn initialised_escrow(env: &Env) -> (MilestoneEscrowClient<'_>, Address) {
+fn initialised_escrow(env: &Env) -> (MilestoneEscrowClient<'_>, Address, Address, Address) {
     env.mock_all_auths();
 
     let admin_addr = Address::generate(env);
@@ -57,7 +57,12 @@ fn initialised_escrow(env: &Env) -> (MilestoneEscrowClient<'_>, Address) {
         &amounts,
     );
 
-    (escrow, admin_addr)
+    // Fund the contract so pause-gated refund settlements (which reject an
+    // empty balance) can proceed in the tests that exercise the split math.
+    let token_admin = token::StellarAssetClient::new(env, &token_contract_id);
+    token_admin.mint(&contract_id, &100_000_i128);
+
+    (escrow, admin_addr, client_addr, freelancer_addr)
 }
 
 // ============================================================================
@@ -74,7 +79,7 @@ fn test_pause_requires_an_initialised_contract() {
     // Pausing an uninitialised contract would set a flag that no admin path
     // could ever clear.
     assert_eq!(
-        escrow.try_emergency_pause(&stranger),
+        escrow.try_emergency_pause(&stranger, &stranger),
         Err(Ok(Error::NotInitialized))
     );
     assert!(!escrow.is_emergency_paused());
@@ -96,11 +101,11 @@ fn test_unpause_requires_an_initialised_contract() {
 #[test]
 fn test_pause_rejects_a_non_admin_caller() {
     let env = test_env();
-    let (escrow, _admin) = initialised_escrow(&env);
+    let (escrow, _admin, _client, _freelancer) = initialised_escrow(&env);
     let attacker = Address::generate(&env);
 
     assert_eq!(
-        escrow.try_emergency_pause(&attacker),
+        escrow.try_emergency_pause(&attacker, &attacker),
         Err(Ok(Error::Unauthorized))
     );
     assert!(
@@ -112,10 +117,10 @@ fn test_pause_rejects_a_non_admin_caller() {
 #[test]
 fn test_unpause_rejects_a_non_admin_caller() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, _admin, client, freelancer) = initialised_escrow(&env);
     let attacker = Address::generate(&env);
 
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
 
     assert_eq!(
         escrow.try_emergency_unpause(&attacker),
@@ -130,23 +135,23 @@ fn test_unpause_rejects_a_non_admin_caller() {
 #[test]
 fn test_pause_sets_the_flag() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, _admin, client, freelancer) = initialised_escrow(&env);
 
     assert!(!escrow.is_emergency_paused());
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
     assert!(escrow.is_emergency_paused());
 }
 
 #[test]
 fn test_pause_twice_is_rejected_as_already_paused() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, _admin, client, freelancer) = initialised_escrow(&env);
 
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
 
     // A redundant pause must not read as fresh action during an incident.
     assert_eq!(
-        escrow.try_emergency_pause(&admin),
+        escrow.try_emergency_pause(&client, &freelancer),
         Err(Ok(Error::AlreadyPaused))
     );
     assert!(escrow.is_emergency_paused());
@@ -155,7 +160,7 @@ fn test_pause_twice_is_rejected_as_already_paused() {
 #[test]
 fn test_unpause_without_a_pause_is_rejected_as_not_paused() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, admin, _client, _freelancer) = initialised_escrow(&env);
 
     assert_eq!(
         escrow.try_emergency_unpause(&admin),
@@ -167,9 +172,9 @@ fn test_unpause_without_a_pause_is_rejected_as_not_paused() {
 #[test]
 fn test_unpause_twice_is_rejected_as_not_paused() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
 
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
     escrow.emergency_unpause(&admin);
 
     assert_eq!(
@@ -181,10 +186,10 @@ fn test_unpause_twice_is_rejected_as_not_paused() {
 #[test]
 fn test_pause_unpause_cycle_is_repeatable() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
 
     for _ in 0..3 {
-        escrow.emergency_pause(&admin);
+        escrow.emergency_pause(&client, &freelancer);
         assert!(escrow.is_emergency_paused());
         escrow.emergency_unpause(&admin);
         assert!(!escrow.is_emergency_paused());
@@ -194,13 +199,13 @@ fn test_pause_unpause_cycle_is_repeatable() {
 #[test]
 fn test_pause_releases_its_transition_lock() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
 
     // If the lock leaked, the following unpause would fail with
     // EmergencyPauseInProgress instead of succeeding.
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
     escrow.emergency_unpause(&admin);
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
 
     assert!(escrow.is_emergency_paused());
 }
@@ -208,9 +213,9 @@ fn test_pause_releases_its_transition_lock() {
 #[test]
 fn test_pause_blocks_guarded_endpoints() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, _admin, client, freelancer) = initialised_escrow(&env);
 
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
 
     // `fund` is guarded by ensure_not_paused, so the freeze is observable
     // through the normal escrow flow, not just the status getter.
@@ -221,9 +226,9 @@ fn test_pause_blocks_guarded_endpoints() {
 #[test]
 fn test_unpause_restores_guarded_endpoints() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
 
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
     escrow.emergency_unpause(&admin);
 
     let job = escrow.get_job();
@@ -233,19 +238,20 @@ fn test_unpause_restores_guarded_endpoints() {
 #[test]
 fn test_pause_emits_a_state_change_event() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, _admin, client, freelancer) = initialised_escrow(&env);
 
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
 
     let topic: Val = symbol_short!("empause").into_val(&env);
     let mut found = false;
 
-    for e in env.events().all().iter() {
+    for e in crate::all_event_tuples(&env).iter() {
         if let Some(t) = e.1.get(0) {
             if t.get_payload() == topic.get_payload() {
                 found = true;
                 let data = EmergencyPausedEvent::from_val(&env, &e.2);
-                assert_eq!(data.admin, admin);
+                assert_eq!(data.client, client);
+                assert_eq!(data.freelancer, freelancer);
             }
         }
     }
@@ -256,18 +262,18 @@ fn test_pause_emits_a_state_change_event() {
 #[test]
 fn test_rejected_transitions_emit_no_event() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, admin, _client, _freelancer) = initialised_escrow(&env);
     let attacker = Address::generate(&env);
 
     // Neither an unauthorised pause nor an unpause of a running contract may
     // publish a state-change event — on either topic.
-    let _ = escrow.try_emergency_pause(&attacker);
+    let _ = escrow.try_emergency_pause(&attacker, &attacker);
     let _ = escrow.try_emergency_unpause(&admin);
 
     let paused_topic: Val = symbol_short!("empause").into_val(&env);
     let unpaused_topic: Val = symbol_short!("emunpause").into_val(&env);
 
-    for e in env.events().all().iter() {
+    for e in crate::all_event_tuples(&env).iter() {
         if let Some(t) = e.1.get(0) {
             assert_ne!(
                 t.get_payload(),
@@ -290,7 +296,7 @@ fn test_rejected_transitions_emit_no_event() {
 #[test]
 fn test_claim_refund_requires_the_contract_to_be_paused() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, admin, _client, _freelancer) = initialised_escrow(&env);
 
     // Settling an emergency refund on a running escrow would bypass the
     // normal release and dispute paths.
@@ -316,10 +322,10 @@ fn test_claim_refund_requires_an_initialised_contract() {
 #[test]
 fn test_claim_refund_rejects_a_non_admin_caller() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, _admin, client, freelancer) = initialised_escrow(&env);
     let attacker = Address::generate(&env);
 
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
 
     assert_eq!(
         escrow.try_emergency_pause_claim_refund(&attacker, &1_000_i128, &5_000_u32, &5_000_u32),
@@ -330,9 +336,9 @@ fn test_claim_refund_rejects_a_non_admin_caller() {
 #[test]
 fn test_claim_refund_succeeds_while_paused() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
 
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
 
     let allocation =
         escrow.emergency_pause_claim_refund(&admin, &1_000_i128, &6_000_u32, &4_000_u32);
@@ -348,9 +354,9 @@ fn test_claim_refund_succeeds_while_paused() {
 #[test]
 fn test_claim_refund_rejects_shares_that_do_not_total_full_scale() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
 
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
 
     assert_eq!(
         escrow.try_emergency_pause_claim_refund(&admin, &1_000_i128, &5_000_u32, &3_000_u32),
@@ -365,9 +371,9 @@ fn test_claim_refund_rejects_shares_that_do_not_total_full_scale() {
 #[test]
 fn test_claim_refund_rejects_non_positive_totals() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
 
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
 
     assert_eq!(
         escrow.try_emergency_pause_claim_refund(&admin, &0_i128, &5_000_u32, &5_000_u32),
@@ -382,9 +388,9 @@ fn test_claim_refund_rejects_non_positive_totals() {
 #[test]
 fn test_claim_refund_conserves_odd_totals() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
 
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
 
     for total in [1_i128, 3, 7, 101, 99_999] {
         let allocation =
@@ -395,6 +401,41 @@ fn test_claim_refund_conserves_odd_totals() {
             "total {total} was not conserved"
         );
     }
+}
+
+#[test]
+fn test_claim_refund_rejects_an_empty_contract_balance() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // Initialised and paused, but never funded: nothing to settle.
+    escrow.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604_800u64,
+        &vec![&env, 1_000_i128],
+    );
+    escrow.emergency_pause(&client_addr, &freelancer_addr);
+
+    assert_eq!(
+        escrow.try_emergency_pause_claim_refund(&admin_addr, &1_000_i128, &5_000_u32, &5_000_u32),
+        Err(Ok(Error::EmptyBalance))
+    );
 }
 
 // ============================================================================
@@ -732,7 +773,7 @@ fn test_allocation_emits_an_event_matching_the_returned_vector() {
     let topic: Val = symbol_short!("epalloc").into_val(&env);
     let mut found = false;
 
-    for e in env.events().all().iter() {
+    for e in crate::all_event_tuples(&env).iter() {
         if let Some(t) = e.1.get(0) {
             if t.get_payload() == topic.get_payload() {
                 found = true;
@@ -759,7 +800,7 @@ fn test_allocation_emits_no_event_when_rejected() {
     let _ = escrow.try_emergency_pause_allocation(&0_i128, &vec![&env, 1_i128]);
 
     let topic: Val = symbol_short!("epalloc").into_val(&env);
-    for e in env.events().all().iter() {
+    for e in crate::all_event_tuples(&env).iter() {
         if let Some(t) = e.1.get(0) {
             assert_ne!(t.get_payload(), topic.get_payload());
         }
@@ -769,9 +810,9 @@ fn test_allocation_emits_no_event_when_rejected() {
 #[test]
 fn test_allocation_agrees_with_the_two_party_split_refund() {
     let env = test_env();
-    let (escrow, admin) = initialised_escrow(&env);
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
 
-    escrow.emergency_pause(&admin);
+    escrow.emergency_pause(&client, &freelancer);
 
     // The multi-party allocator and the bps split refund must not disagree
     // about how the same money is divided.

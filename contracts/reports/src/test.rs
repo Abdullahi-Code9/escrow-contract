@@ -2331,7 +2331,7 @@ fn test_extend_milestone_deadline_succeeds() {
     let initial_time = escrow.time_until_auto_release(&0u32);
     
     // Extend by 1000 seconds
-    escrow.extend_milestone_deadline(&client_addr, &0u32, &1000u64);
+    escrow.extend_milestone_deadline(&client_addr, &0u32, &1000u32);
 
     let new_time = escrow.time_until_auto_release(&0u32);
     assert_eq!(new_time, initial_time + 1000);
@@ -2347,7 +2347,7 @@ fn test_extend_milestone_deadline_not_client_fails() {
     escrow.mark_delivered(&freelancer_addr, &0u32);
 
     // freelancer tries to extend
-    let result = escrow.try_extend_milestone_deadline(&freelancer_addr, &0u32, &1000u64);
+    let result = escrow.try_extend_milestone_deadline(&freelancer_addr, &0u32, &1000u32);
     assert_eq!(result.unwrap_err().unwrap(), Error::Unauthorized);
 }
 
@@ -2359,7 +2359,7 @@ fn test_extend_milestone_deadline_invalid_status_fails() {
     let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
 
     // milestone is Pending, not Delivered
-    let result = escrow.try_extend_milestone_deadline(&client_addr, &0u32, &1000u64);
+    let result = escrow.try_extend_milestone_deadline(&client_addr, &0u32, &1000u32);
     assert_eq!(result.unwrap_err().unwrap(), Error::InvalidStatus);
 }
 
@@ -2372,7 +2372,7 @@ fn test_extend_milestone_deadline_zero_seconds_fails() {
 
     escrow.mark_delivered(&freelancer_addr, &0u32);
 
-    let result = escrow.try_extend_milestone_deadline(&client_addr, &0u32, &0u64);
+    let result = escrow.try_extend_milestone_deadline(&client_addr, &0u32, &0u32);
     assert_eq!(result.unwrap_err().unwrap(), Error::InvalidExtension);
 }
 
@@ -5387,6 +5387,49 @@ fn test_upgrade_admin_auth_check_passes() {
     assert_ne!(result, Err(Ok(Error::Unauthorized)));
 }
 
+/// Issue #352: an unauthorized caller must be rejected by the guard clause
+/// at the very top of `upgrade`, before the version counter (the only
+/// storage key `upgrade` mutates on success) is touched.
+#[test]
+fn test_upgrade_unauthorized_caller_mutates_no_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let version_before = client.version();
+
+    let bad_actor = Address::generate(&env);
+    let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_upgrade(&bad_actor, &fake_hash);
+
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    assert_eq!(client.version(), version_before);
+}
+
+/// Issue #352: `upgrade` must be blocked while the contract is
+/// emergency-paused, failing with the specific `Paused` error rather than
+/// proceeding to the WASM upgrade / version bump.
+#[test]
+fn test_upgrade_while_paused_fails_with_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.emergency_pause(&admin_addr);
+    assert!(client.is_emergency_paused());
+
+    let version_before = client.version();
+
+    let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_upgrade(&admin_addr, &fake_hash);
+
+    assert_eq!(result, Err(Ok(Error::Paused)));
+    assert_eq!(client.version(), version_before);
+    assert!(client.is_emergency_paused());
+}
+
 // ============================================================================
 // add_whitelisted_token ΓÇö comprehensive boundary / negative / edge-case tests
 // ============================================================================
@@ -5986,6 +6029,72 @@ fn test_platform_fee_allocation_admin_override_unlocks_locked_allocation() {
 }
 
 #[test]
+fn test_platform_fee_allocation_treasury_exceeds_max_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(ReportsContract, ());
+    let client = ReportsContractClient::new(&env, &contract_id);
+    
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    
+    // Treasury at 2001 bps (> 2000)
+    let result = client.try_set_platform_fee_allocation(&admin_addr, &0_u32, &7999_u32, &2001_u32);
+    assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
+}
+
+#[test]
+fn test_platform_fee_allocation_client_exceeds_max_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(ReportsContract, ());
+    let client = ReportsContractClient::new(&env, &contract_id);
+    
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    
+    // Client at 5001 bps (> 5000)
+    let result = client.try_set_platform_fee_allocation(&admin_addr, &5001_u32, &4999_u32, &0_u32);
+    assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
+}
+
+#[test]
 fn test_emergency_pause_admin_override_requires_verified_admin() {
     let env = Env::default();
     env.mock_all_auths();
@@ -6110,6 +6219,56 @@ fn test_payment_streaming_milestones_invalid_ratio_fails() {
     assert_eq!(
         client.try_payment_streaming_milestones(&100_i128, &4_i128, &3_i128),
         Err(Ok(Error::InvalidRatio))
+    );
+}
+
+#[test]
+fn test_split_refund_net_distribution() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReportsContract, ());
+    let client = ReportsContractClient::new(&env, &contract_id);
+
+    // Platform Fee Allocation:
+    // Client: 10% (1000 bps)
+    // Freelancer: 80% (8000 bps)
+    // Treasury: 10% (1000 bps)
+    let fee_allocation = PlatformFeeAllocation {
+        client_bps: 1000,
+        freelancer_bps: 8000,
+        treasury_bps: 1000,
+        locked: false,
+    };
+
+    // Split Refund: 1000 total.
+    // Client refund: 50% (5000 bps) -> 500 gross refund
+    // Freelancer payout: 50% (5000 bps) -> 500 gross payout
+    let distribution = client.split_refund_net_distribution(
+        &1000_i128,
+        &5000_u32,
+        &5000_u32,
+        &fee_allocation,
+    );
+
+    // Client net refund is fee-exempt: 500
+    assert_eq!(distribution.client_net_refund, 500);
+
+    // Fees are applied on the 500 gross payout to freelancer:
+    // Client fee share: 10% of 500 = 50
+    // Treasury fee share: 10% of 500 = 50
+    // Freelancer net payout: 80% of 500 = 400
+    assert_eq!(distribution.client_fee_share, 50);
+    assert_eq!(distribution.treasury_fee_share, 50);
+    assert_eq!(distribution.freelancer_net_payout, 400);
+
+    // Total should add up to original amount (1000)
+    assert_eq!(
+        distribution.client_net_refund
+            + distribution.client_fee_share
+            + distribution.treasury_fee_share
+            + distribution.freelancer_net_payout,
+        1000
     );
 }
 
@@ -6252,6 +6411,23 @@ fn test_multisig_transfer_admin_ratio_split_preserves_total() {
 
     let total = allocations.iter().fold(0_i128, |acc, v| acc + v);
     assert_eq!(total, 100);
+}
+
+#[test]
+fn test_multisig_transfer_admin_high_precision_split_preserves_every_unit() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amount = 1_000_000_000_000_000_001_i128;
+    let ratios = vec![&env, 2_i128, 3_i128, 5_i128];
+
+    let allocations = client.multisig_transfer_admin(&amount, &ratios);
+    assert_eq!(allocations.get(0).unwrap(), 200_000_000_000_000_001);
+    assert_eq!(allocations.get(1).unwrap(), 300_000_000_000_000_000);
+    assert_eq!(allocations.get(2).unwrap(), 500_000_000_000_000_000);
+    assert_eq!(allocations.iter().fold(0_i128, |sum, value| sum + value), amount);
 }
 
 #[test]

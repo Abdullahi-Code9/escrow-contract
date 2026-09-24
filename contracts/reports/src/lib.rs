@@ -29,7 +29,12 @@ pub enum Error {
     InvalidRatio = 14,
     InvalidExtension = 15,
     EscrowLocked = 16,
+    /// Configured fees exceed the maximum allowed limits (e.g. treasury > 20% or client > 50%)
+    FeeTooHigh = 29,
 }
+
+const MAX_TREASURY_FEE_BPS: u32 = 2000;
+const MAX_CLIENT_FEE_BPS: u32 = 5000;
 
 const BPS_SCALE: u32 = 10_000;
 
@@ -88,6 +93,16 @@ pub struct RefundAllocation {
     pub freelancer_payout_bps: u32,
 }
 
+/// Result of a split-refund fee distribution, detailing the net amounts and fee shares.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SplitRefundFeeDistribution {
+    pub client_net_refund: i128,
+    pub client_fee_share: i128,
+    pub freelancer_net_payout: i128,
+    pub treasury_fee_share: i128,
+}
+
 #[contracttype]
 pub enum DataKey {
     Job,
@@ -95,7 +110,9 @@ pub enum DataKey {
     Admin,
     Version,
     WhitelistedTokens,
-    EmergencyPaused,
+    /// Instance: whether the escrow is emergency-paused.  Short key `Ep`
+    /// (2 chars vs 16) to minimise on-ledger symbol bytes.
+    Ep,
     PlatformFeeAllocation,
     /// Temporary key: records the ledger timestamp at which a milestone was
     /// marked delivered.  Written by `mark_delivered`, consumed by
@@ -113,10 +130,12 @@ pub enum DataKey {
     MilestoneReleased(u32),
     Reputation(Address),
     // ── escrow_interest_yield admin-override keys ────────────────────────────
-    /// Persistent: annual yield rate expressed in basis points (1 bp = 0.01 %).
-    /// Range 0–10 000 (0 %–100 %).  Written by `admin_set_yield_rate`, read by
-    /// `get_yield_info` and `admin_accrue_yield`.
-    YieldRateBps,
+    /// Persistent: holds the `YieldConfig` struct (annual yield rate in basis
+    /// points, 1 bp = 0.01 %, range 0–10 000 / 0 %–100 %).  Written by
+    /// `admin_set_yield_rate`, read by `get_yield_info` and `admin_accrue_yield`.
+    /// Consolidated into a single struct-valued key to minimise the ledger
+    /// footprint versus one key per field.
+    YieldConfig,
     /// Persistent: total interest (in token stroops) accrued so far by the
     /// admin via `admin_accrue_yield`.  Reset to zero on admin override release
     /// or refund so downstream indexers can detect a fresh yield cycle.
@@ -128,7 +147,8 @@ pub enum DataKey {
     /// raise_dispute, resolve_dispute) so that an emergency admin investigation
     /// cannot be interfered with.
     Paused,
-    MilestoneTimeExtension(u32),
+    MultisigLocked,
+    TimeExt(u32),
     CancelLock,
     // ── multisig approval compact storage keys ─────────────────────────────
     /// The full list of registered multisig signers (instance storage, written
@@ -193,8 +213,8 @@ pub struct DeadlineExtendedEvent {
     pub contract_id: Address,
     pub milestone_index: u32,
     pub client: Address,
-    pub extra_seconds: u64,
-    pub new_extension: u64,
+    pub extra_seconds: u32,
+    pub new_extension: u32,
 }
 
 #[contracttype]
@@ -300,6 +320,17 @@ pub struct CancelEscrowInitiatedEvent {
 }
 
 
+// ── escrow_interest_yield admin-override config ──────────────────────────────
+
+/// Consolidated yield configuration stored under `DataKey::YieldConfig`.
+/// Bundles all yield-related settings into a single struct-valued ledger
+/// entry so `admin_set_yield_rate` touches one key instead of several.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct YieldConfig {
+    pub yield_rate: u32,
+}
+
 // ── escrow_interest_yield admin-override events ──────────────────────────────
 
 /// Emitted by `admin_set_yield_rate` whenever the admin updates the annual
@@ -380,11 +411,12 @@ pub struct EscrowResumedEvent {
     pub contract_id: Address,
 }
 
-/// Emitted by `emergency_pause` when the admin pauses the escrow.
+/// Emitted by `emergency_pause` when the escrow is paused by the client and freelancer.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmergencyPausedEvent {
-    pub admin: Address,
+    pub client: Address,
+    pub freelancer: Address,
     pub contract_id: Address,
 }
 
@@ -441,7 +473,7 @@ impl MilestoneEscrow {
         let paused = env
             .storage()
             .instance()
-            .get::<_, bool>(&DataKey::EmergencyPaused)
+            .get::<_, bool>(&DataKey::Ep)
             .unwrap_or(false);
         if paused {
             return Err(Error::Paused);
@@ -462,6 +494,10 @@ impl MilestoneEscrow {
         freelancer_bps: u32,
         treasury_bps: u32,
     ) -> Result<(), Error> {
+        if treasury_bps > MAX_TREASURY_FEE_BPS || client_bps > MAX_CLIENT_FEE_BPS {
+            return Err(Error::FeeTooHigh);
+        }
+
         let total = client_bps
             .checked_add(freelancer_bps)
             .and_then(|v| v.checked_add(treasury_bps))
@@ -547,10 +583,11 @@ impl MilestoneEscrow {
             .set(&DataKey::MilestoneReleased(index), &true);
     }
 
-    fn load_time_extension(env: &Env, index: u32) -> u64 {
+    fn load_time_extension(env: &Env, index: u32) -> u32 {
         env.storage()
-            .persistent()
-            .get(&DataKey::MilestoneTimeExtension(index))
+            .temporary()
+            .get(&DataKey::TimeExt(index))
+            .or_else(|| env.storage().persistent().get(&DataKey::TimeExt(index)))
             .unwrap_or(0)
     }
 
@@ -709,7 +746,7 @@ impl MilestoneEscrow {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPaused, &false);
+            .set(&DataKey::Ep, &false);
         env.storage().instance().set(
             &DataKey::PlatformFeeAllocation,
             &PlatformFeeAllocation {
@@ -1087,7 +1124,7 @@ impl MilestoneEscrow {
         env: Env,
         client: Address,
         milestone_index: u32,
-        extra_seconds: u64,
+        extra_seconds: u32,
     ) -> Result<(), Error> {
         Self::assert_not_paused(&env)?;
         client.require_auth();
@@ -1111,11 +1148,13 @@ impl MilestoneEscrow {
         }
 
         let current_extension = Self::load_time_extension(&env, milestone_index);
-        let new_extension = current_extension.checked_add(extra_seconds).ok_or(Error::InvalidExtension)?;
+        let new_extension = current_extension
+            .checked_add(extra_seconds)
+            .ok_or(Error::InvalidExtension)?;
 
         env.storage()
-            .persistent()
-            .set(&DataKey::MilestoneTimeExtension(milestone_index), &new_extension);
+            .temporary()
+            .set(&DataKey::TimeExt(milestone_index), &new_extension);
 
         env.events().publish(
             (symbol_short!("extend"),),
@@ -1201,7 +1240,7 @@ impl MilestoneEscrow {
 
         let deadline = delivered_at
             .checked_add(meta.auto_release_seconds)
-            .and_then(|d| d.checked_add(extension))
+            .and_then(|d| d.checked_add(extension as u64))
             .ok_or(Error::InvalidAmount)?;
         let current = env.ledger().timestamp();
         if current < deadline {
@@ -1261,7 +1300,7 @@ impl MilestoneEscrow {
         let delivered_at =
             Self::load_delivered_at(&env, milestone_index).unwrap_or(milestone.delivered_at);
         let extension = Self::load_time_extension(&env, milestone_index);
-        let deadline = delivered_at + meta.auto_release_seconds + extension;
+        let deadline = delivered_at + meta.auto_release_seconds + (extension as u64);
         let current = env.ledger().timestamp();
         (deadline as i64) - (current as i64)
     }
@@ -1625,18 +1664,21 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Upgrade the contract's WASM to `new_wasm_hash`.
+    ///
+    /// # Business rules
+    /// Caller authorization and pause/lock preconditions are checked before
+    /// any storage mutation or WASM upgrade, so a rejected call leaves the
+    /// contract's storage and installed code untouched.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – Admin key has never been stored.
+    /// * `Unauthorized`   – `admin` is not the stored admin.
+    /// * `Paused`         – The contract is currently emergency-paused.
+    /// * `EscrowLocked`   – A cancel is in progress and holds the cancel lock.
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
-        admin.require_auth();
-
-        let stored_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-
-        if admin != stored_admin {
-            return Err(Error::Unauthorized);
-        }
+        Self::require_admin(&env, &admin)?;
+        Self::ensure_not_paused(&env)?;
 
         env.deployer().update_current_contract_wasm(new_wasm_hash);
 
@@ -1648,16 +1690,23 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    pub fn emergency_pause(env: Env, admin: Address) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+    pub fn emergency_pause(env: Env, client: Address, freelancer: Address) -> Result<(), Error> {
+        let meta = Self::load_job_meta(&env)?;
+        if client != meta.client || freelancer != meta.freelancer {
+            return Err(Error::Unauthorized);
+        }
+        client.require_auth();
+        freelancer.require_auth();
+
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPaused, &true);
+            .set(&DataKey::Ep, &true);
 
         env.events().publish(
             (symbol_short!("empause"),),
             EmergencyPausedEvent {
-                admin: admin.clone(),
+                client,
+                freelancer,
                 contract_id: env.current_contract_address(),
             },
         );
@@ -1669,7 +1718,7 @@ impl MilestoneEscrow {
         Self::require_admin(&env, &admin)?;
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPaused, &false);
+            .set(&DataKey::Ep, &false);
 
         env.events().publish(
             (symbol_short!("emunpause"),),
@@ -1692,7 +1741,7 @@ impl MilestoneEscrow {
         let current = env
             .storage()
             .instance()
-            .get::<_, bool>(&DataKey::EmergencyPaused)
+            .get::<_, bool>(&DataKey::Ep)
             .unwrap_or(false);
 
         if current == paused {
@@ -1701,7 +1750,7 @@ impl MilestoneEscrow {
 
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPaused, &paused);
+            .set(&DataKey::Ep, &paused);
 
         env.events().publish(
             (symbol_short!("emoverrid"),),
@@ -1718,7 +1767,7 @@ impl MilestoneEscrow {
     pub fn is_emergency_paused(env: Env) -> bool {
         env.storage()
             .instance()
-            .get(&DataKey::EmergencyPaused)
+            .get(&DataKey::Ep)
             .unwrap_or(false)
     }
 
@@ -1805,6 +1854,59 @@ impl MilestoneEscrow {
             .instance()
             .get(&DataKey::PlatformFeeAllocation)
             .ok_or(Error::NotInitialized)
+    }
+
+    /// Calculate net distributions for a split refund by applying the platform
+    /// fee allocation only to the freelancer's payout portion. The client's refund
+    /// is fee-exempt.
+    pub fn split_refund_net_distribution(
+        env: Env,
+        total_amount: i128,
+        client_refund_bps: u32,
+        freelancer_payout_bps: u32,
+        fee_allocation: PlatformFeeAllocation,
+    ) -> Result<SplitRefundFeeDistribution, Error> {
+        // 1. Get gross split
+        let gross_split = Self::multisig_split_refund(
+            env.clone(),
+            total_amount,
+            client_refund_bps,
+            freelancer_payout_bps,
+        )?;
+
+        // 2. Client net is their gross refund (fee-exempt)
+        let client_net_refund = gross_split.client_refund;
+
+        // 3. Freelancer gross payout is subject to platform fee
+        let gross_payout = gross_split.freelancer_payout;
+
+        // Calculate fee shares using the fee_allocation
+        let client_fee_share = Self::split_round_nearest(
+            gross_payout,
+            fee_allocation.client_bps as i128,
+            BPS_SCALE as i128,
+        )?
+        .first;
+
+        let treasury_fee_share = Self::split_round_nearest(
+            gross_payout,
+            fee_allocation.treasury_bps as i128,
+            BPS_SCALE as i128,
+        )?
+        .first;
+
+        // Freelancer net is what's left
+        let freelancer_net_payout = gross_payout
+            .checked_sub(client_fee_share)
+            .and_then(|v| v.checked_sub(treasury_fee_share))
+            .ok_or(Error::InvalidAmount)?;
+
+        Ok(SplitRefundFeeDistribution {
+            client_net_refund,
+            client_fee_share,
+            freelancer_net_payout,
+            treasury_fee_share,
+        })
     }
 
     pub fn payment_streaming_milestones(
@@ -2111,12 +2213,16 @@ impl MilestoneEscrow {
         let old_rate_bps: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::YieldRateBps)
+            .get(&DataKey::YieldConfig)
+            .map(|config: YieldConfig| config.yield_rate)
             .unwrap_or(0);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::YieldRateBps, &rate_bps);
+        env.storage().persistent().set(
+            &DataKey::YieldConfig,
+            &YieldConfig {
+                yield_rate: rate_bps,
+            },
+        );
 
         env.events().publish(
             (symbol_short!("yldrate"),),
@@ -2218,7 +2324,11 @@ impl MilestoneEscrow {
     /// * `NotFunded`       – Escrow has not been funded; nothing to release.
     /// * `InvalidMilestone`– `milestone_index` is out of range.
     /// * `InvalidStatus`   – Milestone is already `Released` or `Refunded`.
-    /// * `InvalidAmount`   – Remaining balance is ≤ 0 (sanity guard).
+    /// * `InvalidAmount`   – Remaining balance is ≤ 0, or the subtraction
+    ///                       `amount − released_amount` overflows `i128`
+    ///                       (e.g. when `released_amount > amount`).  All
+    ///                       arithmetic uses checked operations so no input
+    ///                       can cause a panic or silent integer wrap.
     pub fn admin_override_release(
         env: Env,
         admin: Address,
@@ -2244,6 +2354,9 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
+        // Use checked_sub so that any i128 overflow (e.g. released_amount >
+        // amount, or extreme values such as i128::MIN / i128::MAX) returns
+        // Error::InvalidAmount rather than panicking or wrapping silently.
         let remaining = milestone
             .amount
             .checked_sub(milestone.released_amount)
@@ -2259,9 +2372,17 @@ impl MilestoneEscrow {
         Self::store_milestone_released(&env, milestone_index);
 
         // Reset accrued yield on emergency override
-        env.storage()
+        if env
+            .storage()
             .persistent()
-            .set(&DataKey::YieldAccrued, &0_i128);
+            .get::<_, i128>(&DataKey::YieldAccrued)
+            .unwrap_or(0)
+            != 0
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::YieldAccrued, &0_i128);
+        }
 
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(
@@ -2305,7 +2426,11 @@ impl MilestoneEscrow {
     /// * `NotFunded`       – Escrow has not been funded.
     /// * `InvalidMilestone`– `milestone_index` is out of range.
     /// * `InvalidStatus`   – Milestone is already `Released` or `Refunded`.
-    /// * `InvalidAmount`   – Remaining balance is ≤ 0 (sanity guard).
+    /// * `InvalidAmount`   – Remaining balance is ≤ 0, or the subtraction
+    ///                       `amount − released_amount` overflows `i128`
+    ///                       (e.g. when `released_amount > amount`).  All
+    ///                       arithmetic uses checked operations so no input
+    ///                       can cause a panic or silent integer wrap.
     pub fn admin_override_refund(
         env: Env,
         admin: Address,
@@ -2330,6 +2455,9 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
+        // Use checked_sub so that any i128 overflow (e.g. released_amount >
+        // amount, or extreme values such as i128::MIN / i128::MAX) returns
+        // Error::InvalidAmount rather than panicking or wrapping silently.
         let remaining = milestone
             .amount
             .checked_sub(milestone.released_amount)
@@ -2343,10 +2471,19 @@ impl MilestoneEscrow {
         milestone.status = MilestoneStatus::Refunded;
         Self::store_milestone(&env, milestone_index, &milestone);
 
-        // Reset accrued yield on emergency override
-        env.storage()
+        // Reset accrued yield on emergency override — only write when the
+        // stored value is non-zero to avoid an unnecessary ledger mutation.
+        if env
+            .storage()
             .persistent()
-            .set(&DataKey::YieldAccrued, &0_i128);
+            .get::<_, i128>(&DataKey::YieldAccrued)
+            .unwrap_or(0)
+            != 0
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::YieldAccrued, &0_i128);
+        }
 
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(&env.current_contract_address(), &meta.client, &remaining);
@@ -2472,7 +2609,8 @@ impl MilestoneEscrow {
         let rate_bps: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::YieldRateBps)
+            .get(&DataKey::YieldConfig)
+            .map(|config: YieldConfig| config.yield_rate)
             .unwrap_or(0);
 
         let total_accrued: i128 = env
