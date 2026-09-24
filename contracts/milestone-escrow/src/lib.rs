@@ -1931,9 +1931,13 @@ impl MilestoneEscrow {
         // Auth + init guards first — a single require_auth so the host does not
         // abort on a duplicated auth requirement.
         current_admin.require_auth();
-        if !env.storage().persistent().has(&DataKey::Admin) {
-            return Err(Error::NotInitialized);
-        }
+        // Footprint: a single read of DataKey::Admin serves both the
+        // initialization guard and the authorization check. Previously this
+        // touched the entry twice — `has(&DataKey::Admin)` followed by
+        // `load_admin()` (which also reads it). `load_admin` already returns
+        // `NotInitialized` when the key is absent, so dropping the redundant
+        // `has` keeps behavior identical (absent → NotInitialized, mismatch →
+        // Unauthorized) while reading the entry only once.
         let stored_admin = Self::load_admin(&env)?;
         if stored_admin != current_admin {
             return Err(Error::Unauthorized);
