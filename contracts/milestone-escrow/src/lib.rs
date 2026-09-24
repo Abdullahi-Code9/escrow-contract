@@ -3214,9 +3214,10 @@ impl MilestoneEscrow {
         env.deployer().update_current_contract_wasm(new_wasm_hash);
 
         let current: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(1);
+        let next = current.checked_add(1).ok_or(Error::InvalidAmount)?;
         env.storage()
             .instance()
-            .set(&DataKey::Version, &(current + 1));
+            .set(&DataKey::Version, &next);
 
         Ok(())
     }

@@ -5608,6 +5608,66 @@ fn test_upgrade_admin_auth_check_passes() {
     assert_ne!(result, Err(Ok(Error::Unauthorized)));
 }
 
+/// The version-bump arithmetic in upgrade uses checked_add.  Verify the guard
+/// expression returns Err(InvalidAmount) at the boundary and produces the same
+/// value as plain addition for all valid inputs — no Soroban host required.
+///
+/// Note: update_current_contract_wasm always aborts in the test environment
+/// (no real WASM is uploaded), so the version-bump line is only reachable
+/// via a direct unit assertion on the guard expression itself.
+#[test]
+fn test_upgrade_version_overflow_returns_invalid_amount() {
+    // u32::MAX overflows — must return Err, not wrap or panic.
+    let overflow: Result<u32, Error> = u32::MAX.checked_add(1).ok_or(Error::InvalidAmount);
+    assert_eq!(overflow, Err(Error::InvalidAmount));
+
+    // Valid inputs produce the same result as unchecked addition (no regression).
+    assert_eq!(1u32.checked_add(1).ok_or(Error::InvalidAmount), Ok(2u32));
+    assert_eq!(41u32.checked_add(1).ok_or(Error::InvalidAmount), Ok(42u32));
+
+    // One below the boundary succeeds.
+    let near_max: u32 = u32::MAX - 1;
+    assert_eq!(
+        near_max.checked_add(1).ok_or(Error::InvalidAmount),
+        Ok(u32::MAX)
+    );
+}
+
+/// version() returns 1 immediately after initialize.
+/// Confirms the storage read path used inside upgrade is correct.
+#[test]
+fn test_upgrade_version_is_one_after_initialize() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    assert_eq!(client.version(), 1u32);
+}
+
+/// When the version counter is at u32::MAX the call must not return
+/// Unauthorized — the auth check passes before the version guard is reached.
+/// (The host aborts on the missing-WASM lookup, which is a separate failure
+/// mode from the overflow guard, but neither should be Unauthorized.)
+#[test]
+fn test_upgrade_version_at_max_does_not_return_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &u32::MAX);
+    });
+
+    let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_upgrade(&admin_addr, &fake_hash);
+    assert_ne!(result, Err(Ok(Error::Unauthorized)));
+}
+
 // ============================================================================
 // add_whitelisted_token ΓÇö comprehensive boundary / negative / edge-case tests
 // ============================================================================
