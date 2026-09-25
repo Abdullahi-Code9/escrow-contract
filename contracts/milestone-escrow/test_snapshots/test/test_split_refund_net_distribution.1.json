@@ -67,14 +67,22 @@
           "v0": {
             "topics": [
               {
-                "symbol": "cxlspref"
+                "symbol": "sprefnet"
               }
             ],
             "data": {
               "map": [
                 {
                   "key": {
-                    "symbol": "client_refund"
+                    "symbol": "client_fee_share"
+                  },
+                  "val": {
+                    "i128": "50"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "client_net_refund"
                   },
                   "val": {
                     "i128": "500"
@@ -90,10 +98,10 @@
                 },
                 {
                   "key": {
-                    "symbol": "freelancer_payout"
+                    "symbol": "freelancer_net_payout"
                   },
                   "val": {
-                    "i128": "500"
+                    "i128": "400"
                   }
                 },
                 {
@@ -102,6 +110,22 @@
                   },
                   "val": {
                     "u32": 5000
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "total_amount"
+                  },
+                  "val": {
+                    "i128": "1000"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "treasury_fee_share"
+                  },
+                  "val": {
+                    "i128": "50"
                   }
                 }
               ]

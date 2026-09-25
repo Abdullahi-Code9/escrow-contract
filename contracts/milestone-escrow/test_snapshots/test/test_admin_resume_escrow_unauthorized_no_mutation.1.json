@@ -414,18 +414,6 @@
                       "key": {
                         "vec": [
                           {
-                            "symbol": "EpLk"
-                          }
-                        ]
-                      },
-                      "val": {
-                        "bool": false
-                      }
-                    },
-                    {
-                      "key": {
-                        "vec": [
-                          {
                             "symbol": "Job"
                           }
                         ]
