@@ -11006,9 +11006,7 @@ fn test_set_escrow_interest_yield_does_not_touch_persistent_storage() {
 
     // InterestYieldState must NOT appear in persistent storage.
     let yield_persistent: Option<EscrowInterestYieldState> = env.as_contract(&contract_id, || {
-        env.storage()
-            .persistent()
-            .get(&DataKey::InterestYieldState)
+        env.storage().persistent().get(&DataKey::InterestYieldState)
     });
     assert_eq!(
         yield_persistent, None,
