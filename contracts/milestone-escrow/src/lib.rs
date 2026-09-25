@@ -4966,7 +4966,34 @@ impl MilestoneEscrow {
     }
 
     /// Return the currently pending admin-transfer proposal, if any.
+    ///
+    /// # Read-only contract
+    ///
+    /// This function **must never write to any storage tier** (instance,
+    /// persistent, or temporary).  It is a pure read: the only operation
+    /// permitted on `env.storage()` is a single `.persistent().get(…)` call
+    /// on `DataKey::PendingAdminTransfer`.
+    ///
+    /// Any future edit that introduces a `.set(…)`, `.remove(…)`,
+    /// `.bump(…)`, or equivalent mutating call breaks this invariant and
+    /// **must be rejected in code review**.  The snapshot-identity tests in
+    /// `get_pending_admin_transfer_tests.rs` enforce this property
+    /// automatically: a full ledger snapshot taken immediately before and
+    /// immediately after calling this function must be byte-identical.
     pub fn get_pending_admin_transfer(env: Env) -> Option<PendingAdminTransfer> {
+        Self::read_pending_admin_transfer(&env)
+    }
+
+    /// Pure-read inner implementation for `get_pending_admin_transfer`.
+    ///
+    /// Extracted as a named private helper so that:
+    /// * the public entry-point stays one line, making accidental write
+    ///   additions immediately obvious in diff review, and
+    /// * internal callers (tests, guards) can call the same read path
+    ///   without re-spelling the storage key.
+    ///
+    /// **This function must contain only read operations.**
+    fn read_pending_admin_transfer(env: &Env) -> Option<PendingAdminTransfer> {
         env.storage()
             .persistent()
             .get(&DataKey::PendingAdminTransfer)
@@ -5325,6 +5352,8 @@ mod admin_override_streaming_release_tests;
 mod admin_set_yield_rate_tests;
 #[cfg(test)]
 mod cancel_admin_transfer_tests;
+#[cfg(test)]
+mod get_pending_admin_transfer_tests;
 #[cfg(test)]
 mod interest_yield_consent_tests;
 #[cfg(test)]
