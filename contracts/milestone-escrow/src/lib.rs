@@ -4092,6 +4092,15 @@ impl MilestoneEscrow {
     /// Sets the `DataKey::PlatformFeeAllocationLock` to prevent re-entrant or concurrent updates.
     /// Emits a `PlatformFeeAllocationSetEvent`.
     ///
+    /// ## Storage-footprint note
+    ///
+    /// This function uses `require_admin_from_instance` rather than the
+    /// standard `require_admin` helper so that the admin verification read
+    /// (`DataKey::Admin`, instance) and all subsequent instance reads/writes
+    /// (`PlatformFeeAllocationLock`, `PlatformFeeAllocation`, `EpLk`) touch
+    /// the **same single ledger entry** (instance storage) instead of two
+    /// (persistent + instance).
+    ///
     /// # Returns
     /// * `Ok(())` on a successful update of the platform fee allocation.
     ///
@@ -4102,6 +4111,7 @@ impl MilestoneEscrow {
     /// * `EmergencyPauseInProgress` - An emergency pause lock is currently active.
     /// * `InvalidRatio` - The sum of the BPS values does not equal 10,000 (BPS_SCALE).
     /// * `FeeTooHigh` - The treasury or client BPS exceeds the maximum allowed limits.
+    /// * `InvalidStatus` - The allocation is locked.
     pub fn set_platform_fee_allocation(
         env: Env,
         admin: Address,
@@ -4109,7 +4119,9 @@ impl MilestoneEscrow {
         freelancer_bps: u32,
         treasury_bps: u32,
     ) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+        // Both the Admin read and all subsequent instance reads/writes touch
+        // instance storage only, so the whole function uses a single ledger entry.
+        Self::require_admin_from_instance(&env, &admin)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
         Self::validate_fee_allocation(client_bps, freelancer_bps, treasury_bps)?;
