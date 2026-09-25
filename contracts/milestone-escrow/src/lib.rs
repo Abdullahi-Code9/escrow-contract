@@ -4982,12 +4982,19 @@ impl MilestoneEscrow {
 
     /// Return the currently pending admin-transfer proposal, if any.
     ///
+    /// # Errors
+    /// * `NotInitialized` – The contract has not been initialized (no admin
+    ///   key is present in storage).  Callers must handle this case rather
+    ///   than relying on a silent `None` return.
+    ///
     /// # Read-only contract
     ///
     /// This function **must never write to any storage tier** (instance,
-    /// persistent, or temporary).  It is a pure read: the only operation
-    /// permitted on `env.storage()` is a single `.persistent().get(…)` call
-    /// on `DataKey::PendingAdminTransfer`.
+    /// persistent, or temporary).  It is a pure read: the only operations
+    /// permitted on `env.storage()` are:
+    /// * one `.persistent().get(…)` on `DataKey::Admin` (initialization
+    ///   guard), and
+    /// * one `.persistent().get(…)` on `DataKey::PendingAdminTransfer`.
     ///
     /// Any future edit that introduces a `.set(…)`, `.remove(…)`,
     /// `.bump(…)`, or equivalent mutating call breaks this invariant and
@@ -4995,7 +5002,7 @@ impl MilestoneEscrow {
     /// `get_pending_admin_transfer_tests.rs` enforce this property
     /// automatically: a full ledger snapshot taken immediately before and
     /// immediately after calling this function must be byte-identical.
-    pub fn get_pending_admin_transfer(env: Env) -> Option<PendingAdminTransfer> {
+    pub fn get_pending_admin_transfer(env: Env) -> Result<Option<PendingAdminTransfer>, Error> {
         Self::read_pending_admin_transfer(&env)
     }
 
@@ -5007,11 +5014,19 @@ impl MilestoneEscrow {
     /// * internal callers (tests, guards) can call the same read path
     ///   without re-spelling the storage key.
     ///
+    /// Returns `Err(Error::NotInitialized)` when no admin key is stored.
+    ///
     /// **This function must contain only read operations.**
-    fn read_pending_admin_transfer(env: &Env) -> Option<PendingAdminTransfer> {
-        env.storage()
+    fn read_pending_admin_transfer(env: &Env) -> Result<Option<PendingAdminTransfer>, Error> {
+        // Guard: reject calls on an uninitialized contract.  We check for the
+        // admin key because it is the canonical "has initialize() been called?"
+        // signal used by every other guarded endpoint (load_admin,
+        // load_job_meta, cancel_admin_transfer_proposal, etc.).
+        Self::load_admin(env)?;
+        Ok(env
+            .storage()
             .persistent()
-            .get(&DataKey::PendingAdminTransfer)
+            .get(&DataKey::PendingAdminTransfer))
     }
 
     pub fn version(env: Env) -> u32 {

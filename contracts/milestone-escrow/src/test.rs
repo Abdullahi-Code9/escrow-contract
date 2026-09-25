@@ -13094,10 +13094,16 @@ fn test_propose_admin_transfer_uninitialized_rejected() {
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    assert_eq!(client.try_get_pending_admin_transfer(), Ok(Ok(None)));
+    assert_eq!(
+        client.try_get_pending_admin_transfer(),
+        Err(Ok(Error::NotInitialized))
+    );
     let result = client.try_propose_admin_transfer(&admin, &new_admin, &1u32);
     assert_eq!(result, Err(Ok(Error::NotInitialized)));
-    assert_eq!(client.try_get_pending_admin_transfer(), Ok(Ok(None)));
+    assert_eq!(
+        client.try_get_pending_admin_transfer(),
+        Err(Ok(Error::NotInitialized))
+    );
 }
 
 #[test]
