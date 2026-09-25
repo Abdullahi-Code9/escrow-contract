@@ -1186,16 +1186,6 @@ impl MilestoneEscrow {
         Ok(meta)
     }
 
-    /// Reject the call before any other ledger access if the contract has not
-    /// been initialised. `initialize` is the only path that sets
-    /// `DataKey::Version`, so its presence is the initialisation marker.
-    fn require_initialized(env: &Env) -> Result<(), Error> {
-        if !env.storage().instance().has(&DataKey::Version) {
-            return Err(Error::NotInitialized);
-        }
-        Ok(())
-    }
-
     /// Verify that the caller is either the stored client or freelancer for
     /// this escrow.  Used by `raise_dispute` to ensure only authorised parties
     /// can initiate a dispute.  Returns the loaded `JobMeta` on success so the
@@ -4880,8 +4870,22 @@ impl MilestoneEscrow {
         new_admin: Address,
         proposal_id: u32,
     ) -> Result<(), Error> {
-        Self::require_initialized(&env)?;
-        Self::require_admin(&env, &admin)?;
+        // Storage-footprint note: `DataKey::Version` (instance) and
+        // `DataKey::Admin` (persistent) are only ever written together, in a
+        // single atomic `initialize` call — a failed `initialize` reverts the
+        // whole invocation, so one can never be present without the other.
+        // `load_admin` alone is therefore a complete "is this contract
+        // initialised" check (it already backs this same guarantee in
+        // `execute_admin_transfer`), so a separate `require_initialized`
+        // call — and the extra `Version` ledger entry it touches — is
+        // redundant here. Auth is still checked only *after* this guard, to
+        // preserve the existing behaviour of rejecting an uninitialised
+        // contract before requiring any signature.
+        let stored_admin = Self::load_admin(&env)?;
+        admin.require_auth();
+        if stored_admin != admin {
+            return Err(Error::Unauthorized);
+        }
 
         let zero_account = Address::from_str(
             &env,
