@@ -146,6 +146,3 @@ fn test_tax_deduction_estimator_rate_limiting_execution_lock() {
     let reentrant_call = escrow.try_tax_withholding_deductions(&0, &500);
     assert_eq!(reentrant_call, Err(Ok(Error::TaxWithholdingInProgress)));
 }
-
-
-

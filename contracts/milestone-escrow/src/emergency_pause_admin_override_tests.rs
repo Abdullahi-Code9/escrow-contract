@@ -320,7 +320,8 @@ fn failed_calls_emit_no_emoverrid_event() {
 #[test]
 fn not_initialized_returns_error() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, crate::MilestoneEscrow);
+    env.mock_all_auths();
+    let contract_id = env.register(crate::MilestoneEscrow, ());
     let client = crate::MilestoneEscrowClient::new(&env, &contract_id);
     let caller = Address::generate(&env);
 

@@ -1748,35 +1748,96 @@ impl MilestoneEscrow {
     /// Initialize a new milestone escrow job.
     ///
     /// Sets up the client/freelancer/arbiter relationship, the settlement
-    /// token, and the milestone schedule. Must be called exactly once before
-    /// any other endpoint (aside from read-only queries) will succeed. The
-    /// escrow token is automatically added to the whitelist, and the
-    /// platform fee allocation defaults to 100% freelancer / 0% client / 0%
-    /// treasury.
+    /// token, and the milestone schedule. Must be called exactly once; every
+    /// other state-mutating endpoint checks for prior initialization and
+    /// returns `NotInitialized` if this call was never made. The settlement
+    /// token is automatically added to the whitelist, and the platform fee
+    /// allocation defaults to 100 % freelancer / 0 % client / 0 % treasury.
     ///
     /// # Parameters
-    /// * `admin`                 – Address that will control admin-only
-    ///                             endpoints (whitelist, pause, overrides).
-    ///                             Must authorize the call.
-    /// * `client`                – Address that funds the job and approves
-    ///                             milestone releases.
-    /// * `freelancer`            – Address that delivers milestones and
-    ///                             receives payouts.
-    /// * `arbiter`                – Address that resolves disputes.
-    /// * `token`                 – Settlement token contract address.
-    /// * `auto_release_seconds`  – Seconds after delivery before a milestone
-    ///                             becomes eligible for `claim_auto_release`.
-    ///                             Must be non-zero.
-    /// * `milestone_amounts`     – Amount owed for each milestone, in order.
+    /// * `admin`                – Address that will control admin-only
+    ///                           endpoints (whitelist management, pause /
+    ///                           resume, admin overrides, yield config).
+    ///                           Must authorize the call.
+    /// * `client`               – Address that funds the job and approves
+    ///                           milestone releases.
+    /// * `freelancer`           – Address that delivers milestones and
+    ///                           receives payouts.
+    /// * `arbiter`              – Address that resolves disputes via
+    ///                           `resolve_dispute`.
+    /// * `token`                – Settlement token contract address used for
+    ///                           all deposits and payouts.
+    /// * `auto_release_seconds` – Seconds after a milestone is marked
+    ///                           delivered before it becomes eligible for
+    ///                           `claim_auto_release`.  Must be non-zero.
+    /// * `milestone_amounts`    – Ordered list of token amounts owed per
+    ///                           milestone.  Must be non-empty; every
+    ///                           individual amount must be strictly positive
+    ///                           (`> 0`).
+    ///
+    /// # Returns
+    /// `Ok(())` on success.  At that point the following state has been
+    /// committed atomically:
+    /// * `DataKey::Job` (instance storage) – `JobMeta` with the supplied
+    ///   parties, token, `auto_release_seconds`, milestone count, and the sum
+    ///   of `milestone_amounts` as `total_amount`.
+    /// * `DataKey::Milestone(i)` (persistent storage) – one `Milestone` entry
+    ///   per element of `milestone_amounts`, each starting in
+    ///   `MilestoneStatus::Pending` with `released_amount = 0`.
+    /// * `DataKey::Admin` (instance **and** persistent storage) – the `admin`
+    ///   address.
+    /// * `DataKey::Version` (instance storage) – version marker `1u32`.
+    /// * `DataKey::Ep` (instance storage) – emergency-pause flag set to
+    ///   `false`.
+    /// * `DataKey::PlatformFeeAllocation` (instance storage) – fee allocation
+    ///   defaulting to 100 % freelancer / 0 % client / 0 % treasury.
+    /// * `DataKey::WhitelistedTokens` (instance storage) – whitelist
+    ///   initialized with `token` as its sole entry.
+    ///
+    /// An `"init"` event carrying an [`InitializedEvent`] is published after
+    /// all state is written.  The event includes all party addresses,
+    /// `auto_release_seconds`, the full `milestone_amounts` vec, the computed
+    /// `total_amount`, and `milestone_count`.
+    ///
+    /// On any error path the Soroban host rolls back all storage writes made
+    /// during this invocation, including the reentrancy sentinel written at
+    /// entry, so the contract remains in its uninitialized state and a
+    /// subsequent valid call will succeed.
     ///
     /// # Errors
-    /// * `AlreadyInitialized` – The contract has already been initialized.
-    /// * `InvalidAddress`     – Any of `admin`, `client`, `freelancer`,
-    ///                          `arbiter`, or `token` is a zero address.
-    /// * `InvalidAmount`      – `auto_release_seconds` is zero, or the total
-    ///                          of `milestone_amounts` overflows.
-    /// * `InvalidMilestone`   – `milestone_amounts` could not be read at a
-    ///                          given index.
+    /// Errors are returned in the order the corresponding checks appear in the
+    /// function body.
+    ///
+    /// * [`Error::AlreadyInitialized`] – `DataKey::Job` is already present in
+    ///   instance storage, meaning `initialize` has already completed
+    ///   successfully (or a prior attempt wrote the reentrancy sentinel and the
+    ///   transaction was not rolled back).  No state is mutated.
+    ///
+    /// * [`Error::InvalidAddress`] – Any address argument fails the internal
+    ///   `validate_address` check, which rejects:
+    ///   - The Stellar zero account
+    ///     (`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF`),
+    ///   - The canonical Soroban zero contract address
+    ///     (`CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4`),
+    ///   - The escrow contract's own address
+    ///     (`env.current_contract_address()`).
+    ///   The check is applied in parameter order: `admin`, `client`,
+    ///   `freelancer`, `arbiter`, `token`.
+    ///
+    /// * [`Error::InvalidAmount`] – Any of the following conditions:
+    ///   - `milestone_amounts` is empty (no milestones to escrow).
+    ///   - Any individual milestone amount is `≤ 0` (zero or negative amounts
+    ///     are not valid escrow values).
+    ///   - The sum of all milestone amounts overflows `i128`.
+    ///   - `auto_release_seconds` is `0` (zero disables the auto-release
+    ///     window entirely, which is not a valid configuration).
+    ///     Note: the `auto_release_seconds` check runs *after* the milestone
+    ///     amount validation in the current implementation.
+    ///
+    /// * [`Error::InvalidMilestone`] – An element of `milestone_amounts` could
+    ///   not be retrieved by index during the milestone-storage loop.  In
+    ///   practice this indicates an internal SDK-level error rather than a
+    ///   caller mistake.
     #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         env: Env,
