@@ -23,6 +23,8 @@ mod arbitration_split_event_tests;
 mod execute_admin_transfer_tests;
 #[path = "get_platform_fee_allocation_tests.rs"]
 mod get_platform_fee_allocation_tests;
+#[path = "interest_yield_split_refund_guards_tests.rs"]
+mod interest_yield_split_refund_guards_tests;
 #[path = "load_platform_fee_allocation_tests.rs"]
 mod load_platform_fee_allocation_tests;
 #[path = "milestone_time_extensions_tests.rs"]
@@ -37,6 +39,8 @@ mod multisig_transfer_admin_tests;
 mod platform_fee_allocation_no_mutation_tests;
 #[path = "propose_admin_transfer_footprint_tests.rs"]
 mod propose_admin_transfer_footprint_tests;
+#[path = "split_refund_net_distribution_tests.rs"]
+mod split_refund_net_distribution_tests;
 #[path = "tax_withholding_tests.rs"]
 mod tax_withholding_tests;
 
