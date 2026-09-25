@@ -844,10 +844,30 @@
                 },
                 {
                   "key": {
+                    "symbol": "milestone_amount"
+                  },
+                  "val": {
+                    "i128": "1000"
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "milestone_index"
                   },
                   "val": {
                     "u32": 0
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "new_status"
+                  },
+                  "val": {
+                    "vec": [
+                      {
+                        "symbol": "Disputed"
+                      }
+                    ]
                   }
                 }
               ]

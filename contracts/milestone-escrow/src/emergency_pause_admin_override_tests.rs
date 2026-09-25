@@ -316,3 +316,16 @@ fn failed_calls_emit_no_emoverrid_event() {
         "no emoverrid event must be emitted by any failed call"
     );
 }
+
+#[test]
+fn not_initialized_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(crate::MilestoneEscrow, ());
+    let client = crate::MilestoneEscrowClient::new(&env, &contract_id);
+    let caller = Address::generate(&env);
+
+    // Call without having initialized the contract with an admin key
+    let result = client.try_emergency_pause_admin_override(&caller, &true);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}

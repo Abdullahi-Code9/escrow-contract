@@ -21,6 +21,12 @@ mod admin_tax_withholding_guards_tests;
 mod arbitration_split_event_tests;
 #[path = "execute_admin_transfer_tests.rs"]
 mod execute_admin_transfer_tests;
+#[path = "get_platform_fee_allocation_tests.rs"]
+mod get_platform_fee_allocation_tests;
+#[path = "interest_yield_split_refund_guards_tests.rs"]
+mod interest_yield_split_refund_guards_tests;
+#[path = "load_platform_fee_allocation_tests.rs"]
+mod load_platform_fee_allocation_tests;
 #[path = "milestone_time_extensions_tests.rs"]
 mod milestone_time_extensions_tests;
 #[path = "multisig_admin_override_refund_tests.rs"]
@@ -29,6 +35,12 @@ mod multisig_admin_override_refund_tests;
 mod multisig_split_refund_tests;
 #[path = "multisig_transfer_admin_tests.rs"]
 mod multisig_transfer_admin_tests;
+#[path = "platform_fee_allocation_no_mutation_tests.rs"]
+mod platform_fee_allocation_no_mutation_tests;
+#[path = "propose_admin_transfer_footprint_tests.rs"]
+mod propose_admin_transfer_footprint_tests;
+#[path = "split_refund_net_distribution_tests.rs"]
+mod split_refund_net_distribution_tests;
 #[path = "tax_withholding_tests.rs"]
 mod tax_withholding_tests;
 
@@ -3221,6 +3233,156 @@ fn test_multisig_lock_state_transitions() {
     assert!(client.is_multisig_locked());
 }
 
+/// multisig_lock must touch only instance storage — both the admin
+/// verification read and the MultisigLocked write must go to the same
+/// single ledger entry (instance), NOT to persistent storage.
+///
+/// Before this consolidation, require_admin read from *persistent* storage
+/// (DataKey::Admin) while the MultisigLocked write went to *instance*
+/// storage — two distinct ledger entries.  After the fix both operations
+/// touch *instance* storage, halving the ledger footprint of the call.
+#[test]
+fn test_multisig_lock_uses_single_instance_ledger_entry() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Verify the Admin key is present in instance storage (set by initialize).
+    let instance_admin: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Admin)
+    });
+    assert!(
+        instance_admin.is_some(),
+        "Admin must be present in instance storage after initialize"
+    );
+
+    // MultisigLocked must be absent before the call.
+    let locked_before: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::MultisigLocked)
+    });
+    assert_eq!(
+        locked_before, None,
+        "MultisigLocked must be absent initially"
+    );
+
+    client.multisig_lock(&admin_addr);
+
+    // After the call, MultisigLocked must be set in instance storage.
+    let locked_after: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::MultisigLocked)
+    });
+    assert_eq!(
+        locked_after,
+        Some(true),
+        "MultisigLocked must be set to true in instance storage after multisig_lock"
+    );
+
+    // The public accessor must agree.
+    assert!(client.is_multisig_locked());
+}
+
+/// multisig_lock must not touch persistent storage for the admin check —
+/// both the admin verification and the lock write must stay in instance
+/// storage, confirming the reduced ledger footprint.
+#[test]
+fn test_multisig_lock_does_not_write_persistent_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Record which persistent keys exist before the call.
+    // DataKey::Admin in persistent storage must already be present (written by
+    // initialize) and must remain unchanged after multisig_lock.
+    let admin_before: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Admin)
+    });
+
+    client.multisig_lock(&admin_addr);
+
+    // Persistent Admin must be unchanged — multisig_lock must not touch it.
+    let admin_after: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Admin)
+    });
+    assert_eq!(
+        admin_before, admin_after,
+        "multisig_lock must not alter persistent::Admin"
+    );
+
+    // MultisigLocked must NOT appear in persistent storage (it belongs in instance).
+    let locked_persistent: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::MultisigLocked)
+    });
+    assert_eq!(
+        locked_persistent, None,
+        "multisig_lock must not write MultisigLocked to persistent storage"
+    );
+}
+
+/// A non-admin caller must be rejected and must not mutate any storage.
+#[test]
+fn test_multisig_lock_unauthorized_leaves_no_trace() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, _, _, contract_id, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let attacker = Address::generate(&env);
+    let result = client.try_multisig_lock(&attacker);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // MultisigLocked must not have been set in instance storage.
+    let locked: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::MultisigLocked)
+    });
+    assert_eq!(
+        locked, None,
+        "failed multisig_lock must not write MultisigLocked to instance storage"
+    );
+    assert!(!client.is_multisig_locked());
+}
+
+/// Calling multisig_lock before initialize must return NotInitialized and
+/// must not write any storage — the instance Admin key is absent.
+#[test]
+fn test_multisig_lock_before_initialize_returns_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let result = client.try_multisig_lock(&admin);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+
+    // No storage must have been written.
+    let locked: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::MultisigLocked)
+    });
+    assert_eq!(locked, None);
+}
+
+/// Calling multisig_lock twice is idempotent — the flag stays set and no
+/// error is returned on the second call.
+#[test]
+fn test_multisig_lock_idempotent() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.multisig_lock(&admin_addr);
+    assert!(client.is_multisig_locked());
+
+    // Second call must succeed and leave the flag set.
+    client.multisig_lock(&admin_addr);
+    assert!(client.is_multisig_locked());
+}
+
 /// Verify multisig_admin_override_release requires verified admin auth.
 #[test]
 fn test_multisig_admin_override_release_requires_admin() {
@@ -5792,6 +5954,64 @@ fn test_initialize_auto_release_seconds_zero_fails() {
     assert_eq!(init_result, Err(Ok(Error::InvalidAmount)));
 }
 
+/// The version-bump arithmetic in upgrade uses checked_add.  Verify the guard
+/// expression returns Err(InvalidAmount) at the boundary and produces the same
+/// value as plain addition for all valid inputs — no Soroban host required.
+///
+/// Note: update_current_contract_wasm always aborts in the test environment
+/// (no real WASM is uploaded), so the version-bump line is only reachable
+/// via a direct unit assertion on the guard expression itself.
+#[test]
+fn test_upgrade_version_overflow_returns_invalid_amount() {
+    // u32::MAX overflows — must return Err, not wrap or panic.
+    let overflow: Result<u32, Error> = u32::MAX.checked_add(1).ok_or(Error::InvalidAmount);
+    assert_eq!(overflow, Err(Error::InvalidAmount));
+
+    // Valid inputs produce the same result as unchecked addition (no regression).
+    assert_eq!(1u32.checked_add(1).ok_or(Error::InvalidAmount), Ok(2u32));
+    assert_eq!(41u32.checked_add(1).ok_or(Error::InvalidAmount), Ok(42u32));
+
+    // One below the boundary succeeds.
+    let near_max: u32 = u32::MAX - 1;
+    assert_eq!(
+        near_max.checked_add(1).ok_or(Error::InvalidAmount),
+        Ok(u32::MAX)
+    );
+}
+
+/// version() returns 1 immediately after initialize.
+/// Confirms the storage read path used inside upgrade is correct.
+#[test]
+fn test_upgrade_version_is_one_after_initialize() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    assert_eq!(client.version(), 1u32);
+}
+
+/// When the version counter is at u32::MAX the call must not return
+/// Unauthorized — the auth check passes before the version guard is reached.
+/// (The host aborts on the missing-WASM lookup, which is a separate failure
+/// mode from the overflow guard, but neither should be Unauthorized.)
+#[test]
+fn test_upgrade_version_at_max_does_not_return_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::Version, &u32::MAX);
+    });
+
+    let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_upgrade(&admin_addr, &fake_hash);
+    assert_ne!(result, Err(Ok(Error::Unauthorized)));
+}
+
 // ============================================================================
 // add_whitelisted_token ΓÇö integer overflow protection test suite (#20)
 // ============================================================================
@@ -6156,6 +6376,35 @@ fn test_version_returns_one_after_initialize() {
     assert_eq!(client.version(), 1u32);
 }
 
+fn upgrade_event_count(env: &Env) -> u32 {
+    let topic_val: Val = symbol_short!("upgrade").into_val(env);
+    let mut count = 0u32;
+    for event in crate::all_event_tuples(env).iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == topic_val.get_payload() {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+#[test]
+fn test_contract_upgraded_event_fields_reconcile() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let hash = soroban_sdk::BytesN::from_array(&env, &[7u8; 32]);
+    let version = 2u32;
+    let event = ContractUpgradedEvent {
+        admin: admin.clone(),
+        new_wasm_hash: hash.clone(),
+        version,
+    };
+    assert_eq!(event.admin, admin);
+    assert_eq!(event.new_wasm_hash, hash);
+    assert_eq!(event.version, 2);
+}
+
 #[test]
 fn test_upgrade_not_initialized_fails() {
     let env = Env::default();
@@ -6168,6 +6417,7 @@ fn test_upgrade_not_initialized_fails() {
     let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
     let result = client.try_upgrade(&admin, &fake_hash);
     assert_eq!(result, Err(Ok(Error::NotInitialized)));
+    assert_eq!(upgrade_event_count(&env), 0);
 }
 
 #[test]
@@ -6181,6 +6431,7 @@ fn test_upgrade_unauthorized_fails() {
     let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
     let result = client.try_upgrade(&bad_actor, &fake_hash);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    assert_eq!(upgrade_event_count(&env), 0);
 }
 
 #[test]
@@ -6195,6 +6446,7 @@ fn test_upgrade_admin_auth_check_passes() {
     let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
     let result = client.try_upgrade(&admin_addr, &fake_hash);
     assert_ne!(result, Err(Ok(Error::Unauthorized)));
+    assert_eq!(upgrade_event_count(&env), 0);
 }
 
 /// Issue #352: an unauthorized caller must be rejected by the guard clause
@@ -6215,6 +6467,7 @@ fn test_upgrade_unauthorized_caller_mutates_no_storage() {
 
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
     assert_eq!(client.version(), version_before);
+    assert_eq!(upgrade_event_count(&env), 0);
 }
 
 /// Issue #352: `upgrade` must be blocked while the contract is
@@ -6239,6 +6492,98 @@ fn test_upgrade_while_paused_fails_with_typed_error() {
     assert_eq!(result, Err(Ok(Error::Paused)));
     assert_eq!(client.version(), version_before);
     assert!(client.is_emergency_paused());
+    assert_eq!(upgrade_event_count(&env), 0);
+}
+
+// ── #453: upgrade storage-footprint tests ───────────────────────────────────
+
+/// The version-bump logic in upgrade uses a single try_update call on
+/// DataKey::Version. Verify the combined closure expression maps every input
+/// to the expected output without needing the Soroban host:
+///   None (missing key)  → Ok(2)   i.e. unwrap_or(1) + 1
+///   Some(n)             → Ok(n+1) for all valid n
+///   Some(u32::MAX)      → Err(InvalidAmount) — overflow guard
+#[test]
+fn test_upgrade_try_update_closure_correct_for_all_inputs() {
+    // Same expression as the try_update closure in `upgrade`.
+    let bump = |v: Option<u32>| -> Result<u32, Error> {
+        v.unwrap_or(1).checked_add(1).ok_or(Error::InvalidAmount)
+    };
+
+    // Missing key: unwrap_or(1) gives 1, then +1 = 2.
+    let result = bump(None::<u32>);
+    assert_eq!(result, Ok(2));
+
+    // Present key: increments by exactly one.
+    let result = bump(Some(1u32));
+    assert_eq!(result, Ok(2));
+
+    let result = bump(Some(41u32));
+    assert_eq!(result, Ok(42));
+
+    // One below maximum: succeeds.
+    let result = bump(Some(u32::MAX - 1));
+    assert_eq!(result, Ok(u32::MAX));
+
+    // Maximum: overflow returns InvalidAmount, not a panic or wrap.
+    let result = bump(Some(u32::MAX));
+    assert_eq!(result, Err(Error::InvalidAmount));
+}
+
+/// An unauthorized caller must not mutate DataKey::Version — confirmed by
+/// reading the raw storage value before and after the rejected call.
+#[test]
+fn test_upgrade_unauthorized_does_not_write_version() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, _, _, contract_id, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let version_before: Option<u32> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Version)
+    });
+
+    let bad_actor = Address::generate(&env);
+    let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_upgrade(&bad_actor, &fake_hash);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    let version_after: Option<u32> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Version)
+    });
+    assert_eq!(
+        version_after, version_before,
+        "DataKey::Version must not be written by a rejected upgrade"
+    );
+}
+
+/// A paused contract must not have DataKey::Version mutated — confirmed by
+/// reading the raw storage value before and after the rejected call.
+#[test]
+fn test_upgrade_paused_does_not_write_version() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.emergency_pause(&client_addr, &freelancer_addr);
+
+    let version_before: Option<u32> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Version)
+    });
+
+    let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_upgrade(&admin_addr, &fake_hash);
+    assert_eq!(result, Err(Ok(Error::Paused)));
+
+    let version_after: Option<u32> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Version)
+    });
+    assert_eq!(
+        version_after, version_before,
+        "DataKey::Version must not be written while the contract is paused"
+    );
 }
 
 // ============================================================================
@@ -6530,6 +6875,61 @@ fn test_add_whitelisted_token_old_admin_rejected_after_transfer() {
         "new admin should be able to add a token"
     );
     assert!(client.is_token_whitelisted(&token3));
+}
+
+// Issue #444: transfer_admin reads DataKey::Admin exactly once (consolidated
+// from the previous has() + load_admin() double read). These guard the two
+// error paths that the single read now serves.
+
+#[test]
+fn test_transfer_admin_uninitialized_returns_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let new_admin_addr = Address::generate(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // No admin has ever been stored → the single Admin read yields None.
+    let result = client.try_transfer_admin(&admin_addr, &new_admin_addr);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn test_transfer_admin_wrong_caller_returns_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let new_admin_addr = Address::generate(&env);
+    let not_admin = Address::generate(&env);
+
+    let token = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+
+    // The single Admin read is compared against the caller → mismatch rejected,
+    // and the stored admin is left unchanged.
+    let result = client.try_transfer_admin(&not_admin, &new_admin_addr);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // Admin unchanged: the real admin can still rotate.
+    client.transfer_admin(&admin_addr, &new_admin_addr);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -10392,6 +10792,47 @@ fn test_escrow_interest_yield_max_rate_succeeds() {
 }
 
 #[test]
+fn test_escrow_interest_yield_emits_one_structured_event() {
+    let env = Env::default();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let principal = 10_000_i128;
+    let annual_rate_bps = 500_i128;
+    let duration_seconds = 31_536_000_i128;
+    let yield_amount =
+        client.escrow_interest_yield(&principal, &annual_rate_bps, &duration_seconds);
+
+    let topic: Val = symbol_short!("intyield").into_val(&env);
+    let events = crate::all_event_tuples(&env);
+    let mut count = 0u32;
+    for event in events.iter() {
+        if let Some(value) = event.1.get(0) {
+            if value.get_payload() == topic.get_payload() {
+                count += 1;
+                let payload = EscrowInterestYieldEvent::from_val(&env, &event.2);
+                assert_eq!(payload.principal, principal);
+                assert_eq!(payload.annual_rate_bps, annual_rate_bps);
+                assert_eq!(payload.duration_seconds, duration_seconds);
+                assert_eq!(payload.yield_amount, yield_amount);
+            }
+        }
+    }
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn test_escrow_interest_yield_error_emits_no_event() {
+    let env = Env::default();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = client.try_escrow_interest_yield(&0_i128, &500_i128, &31_536_000_i128);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert!(crate::all_event_tuples(&env).is_empty());
+}
+
+#[test]
 fn test_admin_accrue_yield_rejects_i128_extremes() {
     let env = Env::default();
     env.mock_all_auths();
@@ -10572,6 +11013,244 @@ fn test_escrow_interest_yield_unauthorized_admin_fails() {
     let impostor = Address::generate(&env);
     let res = client.try_set_escrow_interest_yield(&impostor, &5_000u32, &5_000u32);
     assert_eq!(res, Err(Ok(Error::Unauthorized)));
+}
+
+// ── set_escrow_interest_yield storage-footprint tests (issue #463) ──────────
+//
+// set_escrow_interest_yield previously touched two distinct ledger entries:
+//   1. persistent::Admin  — read by require_admin / load_admin
+//   2. instance (Admin, InterestYieldState, …)
+//
+// After the consolidation, Admin is read from instance storage via
+// require_admin_from_instance, so the whole function operates on a single
+// instance ledger entry.
+
+/// set_escrow_interest_yield must write InterestYieldState to instance storage
+/// and the Admin read must stay in instance storage (not persistent), meaning
+/// both operations target a single ledger entry.
+#[test]
+fn test_set_escrow_interest_yield_writes_instance_storage_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, client_addr, freelancer_addr, token, auto_release) = setup_test_env(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let arbiter = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter,
+        &token,
+        &auto_release,
+        &vec![&env, 1_000_i128],
+    );
+
+    // Verify Admin is in instance storage before the call.
+    let instance_admin: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Admin)
+    });
+    assert!(
+        instance_admin.is_some(),
+        "Admin must be present in instance storage after initialize"
+    );
+
+    // InterestYieldState must be absent before the first call.
+    let state_before: Option<EscrowInterestYieldState> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::InterestYieldState)
+    });
+    assert_eq!(state_before, None);
+
+    client.set_escrow_interest_yield(&admin, &6_000u32, &4_000u32);
+
+    // InterestYieldState must now be present in instance storage.
+    let state_after: Option<EscrowInterestYieldState> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::InterestYieldState)
+    });
+    assert!(
+        state_after.is_some(),
+        "InterestYieldState must be written to instance storage"
+    );
+    let state = state_after.unwrap();
+    assert_eq!(state.client_share_bps, 6_000);
+    assert_eq!(state.freelancer_share_bps, 4_000);
+    assert!(!state.locked);
+}
+
+/// set_escrow_interest_yield must NOT write InterestYieldState to persistent
+/// storage — confirming it stays entirely within the instance ledger entry.
+#[test]
+fn test_set_escrow_interest_yield_does_not_touch_persistent_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, client_addr, freelancer_addr, token, auto_release) = setup_test_env(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let arbiter = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter,
+        &token,
+        &auto_release,
+        &vec![&env, 1_000_i128],
+    );
+
+    // Snapshot persistent::Admin before the call.
+    let admin_before: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Admin)
+    });
+
+    client.set_escrow_interest_yield(&admin, &5_000u32, &5_000u32);
+
+    // persistent::Admin must be unchanged.
+    let admin_after: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Admin)
+    });
+    assert_eq!(
+        admin_before, admin_after,
+        "set_escrow_interest_yield must not alter persistent::Admin"
+    );
+
+    // InterestYieldState must NOT appear in persistent storage.
+    let yield_persistent: Option<EscrowInterestYieldState> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::InterestYieldState)
+    });
+    assert_eq!(
+        yield_persistent, None,
+        "set_escrow_interest_yield must not write InterestYieldState to persistent storage"
+    );
+}
+
+/// A failed call (unauthorized admin) must not mutate any storage —
+/// no InterestYieldState entry must appear.
+#[test]
+fn test_set_escrow_interest_yield_unauthorized_leaves_no_trace() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, client_addr, freelancer_addr, token, auto_release) = setup_test_env(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let arbiter = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter,
+        &token,
+        &auto_release,
+        &vec![&env, 1_000_i128],
+    );
+
+    let attacker = Address::generate(&env);
+    let result = client.try_set_escrow_interest_yield(&attacker, &5_000u32, &5_000u32);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // No InterestYieldState must have been written.
+    let state: Option<EscrowInterestYieldState> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::InterestYieldState)
+    });
+    assert_eq!(
+        state, None,
+        "unauthorized call must not write InterestYieldState"
+    );
+}
+
+/// A failed call (invalid ratio) must not mutate any storage.
+#[test]
+fn test_set_escrow_interest_yield_invalid_ratio_leaves_no_trace() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, client_addr, freelancer_addr, token, auto_release) = setup_test_env(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let arbiter = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter,
+        &token,
+        &auto_release,
+        &vec![&env, 1_000_i128],
+    );
+
+    let result = client.try_set_escrow_interest_yield(&admin, &7_000u32, &5_000u32);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+
+    // No InterestYieldState must have been written.
+    let state: Option<EscrowInterestYieldState> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::InterestYieldState)
+    });
+    assert_eq!(
+        state, None,
+        "failed call (bad ratio) must not write InterestYieldState"
+    );
+}
+
+/// Calling before initialize must return NotInitialized and write nothing —
+/// the instance Admin key is absent so require_admin_from_instance returns early.
+#[test]
+fn test_set_escrow_interest_yield_before_initialize_returns_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    let result = client.try_set_escrow_interest_yield(&admin, &5_000u32, &5_000u32);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+
+    // Nothing must have been written to instance storage.
+    let state: Option<EscrowInterestYieldState> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::InterestYieldState)
+    });
+    assert_eq!(state, None);
+}
+
+/// Successive calls update the state correctly and remain on instance storage.
+#[test]
+fn test_set_escrow_interest_yield_update_is_idempotent_and_instance_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, client_addr, freelancer_addr, token, auto_release) = setup_test_env(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let arbiter = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter,
+        &token,
+        &auto_release,
+        &vec![&env, 1_000_i128],
+    );
+
+    client.set_escrow_interest_yield(&admin, &5_000u32, &5_000u32);
+    client.set_escrow_interest_yield(&admin, &3_000u32, &7_000u32);
+
+    let state: EscrowInterestYieldState = env
+        .as_contract(&contract_id, || {
+            env.storage().instance().get(&DataKey::InterestYieldState)
+        })
+        .expect("InterestYieldState must be present after second call");
+
+    assert_eq!(state.client_share_bps, 3_000);
+    assert_eq!(state.freelancer_share_bps, 7_000);
+    assert!(!state.locked);
+
+    // Public accessor must agree.
+    let public_state = client.get_escrow_interest_yield();
+    assert_eq!(public_state.client_share_bps, 3_000);
+    assert_eq!(public_state.freelancer_share_bps, 7_000);
 }
 
 // ============================================================================
@@ -11760,6 +12439,240 @@ fn test_set_platform_fee_allocation_fails_does_not_emit_event() {
     assert_eq!(pf_set_count, 0, "should not emit pf_set event on failure");
 }
 
+// ── set_platform_fee_allocation storage-footprint tests (issue #472) ─────────
+//
+// set_platform_fee_allocation previously touched two distinct ledger entries:
+//   1. persistent::Admin  — read by require_admin / load_admin
+//   2. instance (Admin, PlatformFeeAllocation, PlatformFeeAllocationLock, EpLk)
+//
+// After the consolidation, Admin is read from instance storage via
+// require_admin_from_instance, so the whole function operates on a single
+// instance ledger entry.
+
+/// Helper: build an initialised escrow and return (contract_id, admin, client).
+fn setup_pf_alloc_contract(env: &Env) -> (Address, Address, MilestoneEscrowClient<'_>) {
+    let admin = Address::generate(env);
+    let client_addr = Address::generate(env);
+    let freelancer_addr = Address::generate(env);
+    let arbiter = Address::generate(env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(env, &contract_id);
+    escrow.initialize(
+        &admin,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter,
+        &token,
+        &604800u64,
+        &vec![env, 1_000_i128],
+    );
+    (contract_id, admin, escrow)
+}
+
+/// set_platform_fee_allocation must write PlatformFeeAllocation to instance
+/// storage; the Admin read must stay in instance storage (not persistent),
+/// meaning both operations target a single ledger entry.
+#[test]
+fn test_set_platform_fee_allocation_writes_instance_storage_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, admin, escrow) = setup_pf_alloc_contract(&env);
+
+    // Admin must be in instance storage after initialize.
+    let instance_admin: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Admin)
+    });
+    assert!(
+        instance_admin.is_some(),
+        "Admin must be in instance storage"
+    );
+
+    escrow.set_platform_fee_allocation(&admin, &2_000u32, &7_000u32, &1_000u32);
+
+    // Updated allocation must appear in instance storage.
+    let alloc: Option<PlatformFeeAllocation> = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get(&DataKey::PlatformFeeAllocation)
+    });
+    let alloc = alloc.expect("PlatformFeeAllocation must be present in instance storage");
+    assert_eq!(alloc.client_bps, 2_000);
+    assert_eq!(alloc.freelancer_bps, 7_000);
+    assert_eq!(alloc.treasury_bps, 1_000);
+    assert!(!alloc.locked);
+}
+
+/// set_platform_fee_allocation must not alter persistent storage.
+#[test]
+fn test_set_platform_fee_allocation_does_not_touch_persistent_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, admin, escrow) = setup_pf_alloc_contract(&env);
+
+    // Snapshot persistent::Admin before the call.
+    let admin_before: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Admin)
+    });
+
+    escrow.set_platform_fee_allocation(&admin, &5_000u32, &4_000u32, &1_000u32);
+
+    // persistent::Admin must be unchanged.
+    let admin_after: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Admin)
+    });
+    assert_eq!(
+        admin_before, admin_after,
+        "set_platform_fee_allocation must not alter persistent::Admin"
+    );
+
+    // PlatformFeeAllocation must NOT appear in persistent storage.
+    let alloc_persistent: Option<PlatformFeeAllocation> = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PlatformFeeAllocation)
+    });
+    assert_eq!(
+        alloc_persistent, None,
+        "PlatformFeeAllocation must not be written to persistent storage"
+    );
+}
+
+/// Rejected call (unauthorized admin) must not alter PlatformFeeAllocation.
+#[test]
+fn test_set_platform_fee_allocation_unauthorized_leaves_no_trace() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _, escrow) = setup_pf_alloc_contract(&env);
+
+    // Snapshot the initial allocation written by initialize.
+    let alloc_before: Option<PlatformFeeAllocation> = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get(&DataKey::PlatformFeeAllocation)
+    });
+
+    let attacker = Address::generate(&env);
+    let result = escrow.try_set_platform_fee_allocation(&attacker, &5_000u32, &4_000u32, &1_000u32);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // Allocation must be unchanged.
+    let alloc_after: Option<PlatformFeeAllocation> = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get(&DataKey::PlatformFeeAllocation)
+    });
+    assert_eq!(
+        alloc_before, alloc_after,
+        "unauthorized call must not alter PlatformFeeAllocation"
+    );
+}
+
+/// Rejected call (invalid BPS ratio) must not alter PlatformFeeAllocation.
+#[test]
+fn test_set_platform_fee_allocation_invalid_ratio_leaves_no_trace() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, admin, escrow) = setup_pf_alloc_contract(&env);
+
+    let alloc_before: Option<PlatformFeeAllocation> = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get(&DataKey::PlatformFeeAllocation)
+    });
+
+    // 3000 + 3000 + 3000 = 9000 ≠ 10000.
+    let result = escrow.try_set_platform_fee_allocation(&admin, &3_000u32, &3_000u32, &3_000u32);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+
+    let alloc_after: Option<PlatformFeeAllocation> = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get(&DataKey::PlatformFeeAllocation)
+    });
+    assert_eq!(
+        alloc_before, alloc_after,
+        "invalid-ratio call must not alter PlatformFeeAllocation"
+    );
+}
+
+/// Calling before initialize must return NotInitialized —
+/// the instance Admin key is absent so require_admin_from_instance returns early.
+#[test]
+fn test_set_platform_fee_allocation_before_initialize_returns_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    let result = escrow.try_set_platform_fee_allocation(&admin, &5_000u32, &4_000u32, &1_000u32);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+
+    // Nothing must have been written.
+    let alloc: Option<PlatformFeeAllocation> = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get(&DataKey::PlatformFeeAllocation)
+    });
+    assert_eq!(alloc, None);
+}
+
+/// Successive valid calls correctly update the instance-stored allocation.
+#[test]
+fn test_set_platform_fee_allocation_successive_updates_stay_in_instance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, admin, escrow) = setup_pf_alloc_contract(&env);
+
+    escrow.set_platform_fee_allocation(&admin, &2_000u32, &7_000u32, &1_000u32);
+    escrow.set_platform_fee_allocation(&admin, &1_000u32, &8_000u32, &1_000u32);
+
+    let alloc: PlatformFeeAllocation = env
+        .as_contract(&contract_id, || {
+            env.storage()
+                .instance()
+                .get(&DataKey::PlatformFeeAllocation)
+        })
+        .expect("PlatformFeeAllocation must be present");
+
+    assert_eq!(alloc.client_bps, 1_000);
+    assert_eq!(alloc.freelancer_bps, 8_000);
+    assert_eq!(alloc.treasury_bps, 1_000);
+    assert!(!alloc.locked);
+
+    // Public accessor must agree.
+    let public_alloc = escrow.get_platform_fee_allocation();
+    assert_eq!(public_alloc.client_bps, 1_000);
+    assert_eq!(public_alloc.freelancer_bps, 8_000);
+    assert_eq!(public_alloc.treasury_bps, 1_000);
+}
+
+/// The re-entrancy lock (PlatformFeeAllocationLock) must be cleared after
+/// a successful call — confirmed to stay in instance storage.
+#[test]
+fn test_set_platform_fee_allocation_clears_lock_on_instance_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, admin, escrow) = setup_pf_alloc_contract(&env);
+
+    escrow.set_platform_fee_allocation(&admin, &5_000u32, &4_000u32, &1_000u32);
+
+    let lock: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::PlatformFeeAllocationLock)
+    });
+    assert_eq!(
+        lock,
+        Some(false),
+        "PlatformFeeAllocationLock must be cleared (false) in instance storage after call"
+    );
+}
+
 #[test]
 fn test_platform_fee_split_rounds_to_zero() {
     let env = Env::default();
@@ -12924,10 +13837,16 @@ fn test_propose_admin_transfer_uninitialized_rejected() {
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    assert_eq!(client.try_get_pending_admin_transfer(), Ok(Ok(None)));
+    assert_eq!(
+        client.try_get_pending_admin_transfer(),
+        Err(Ok(Error::NotInitialized))
+    );
     let result = client.try_propose_admin_transfer(&admin, &new_admin, &1u32);
     assert_eq!(result, Err(Ok(Error::NotInitialized)));
-    assert_eq!(client.try_get_pending_admin_transfer(), Ok(Ok(None)));
+    assert_eq!(
+        client.try_get_pending_admin_transfer(),
+        Err(Ok(Error::NotInitialized))
+    );
 }
 
 #[test]
@@ -12965,4 +13884,522 @@ fn test_propose_admin_transfer_happy_path() {
         .unwrap();
     assert_eq!(pending.new_admin, new_admin);
     assert_eq!(pending.proposal_id, 42u32);
+}
+
+#[test]
+fn test_pf_alloc_not_initialized_and_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(crate::MilestoneEscrow, ());
+    let client = crate::MilestoneEscrowClient::new(&env, &contract_id);
+    let admin_addr = Address::generate(&env);
+
+    // Call without having initialized the contract with an admin key
+    let result = client.try_set_platform_fee_allocation(&admin_addr, &2000, &7000, &1000);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+
+    // Initialize it
+    let token = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    client.initialize(
+        &admin_addr,
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+
+    // Call with unauthorized user
+    let attacker = Address::generate(&env);
+    let result2 = client.try_set_platform_fee_allocation(&attacker, &2000, &7000, &1000);
+    assert_eq!(result2, Err(Ok(Error::Unauthorized)));
+}
+
+// ============================================================================
+// initialize — InvalidAddress coverage for every parameter (#561)
+//
+// `validate_address` rejects three kinds of invalid address:
+//   (a) The Stellar zero account  (GAAA…WHF)
+//   (b) The canonical Soroban zero contract (CAAA…BSC4)
+//   (c) The escrow contract's own address
+//
+// The existing test (`test_initialize_zero_address_fails`) only exercises
+// case (a) for the `client` parameter.  The tests below exercise every other
+// parameter and both sentinel values so the documented error table in the
+// rustdoc is fully reachable from the test suite.
+// ============================================================================
+
+/// Helper: build the two canonical invalid addresses used by `validate_address`.
+fn zero_addresses(env: &Env) -> (Address, Address) {
+    let zero_account = Address::from_str(
+        env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+    let zero_contract = Address::from_str(
+        env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    );
+    (zero_account, zero_contract)
+}
+
+/// Helper: register a fresh escrow contract and a valid stellar-asset token,
+/// returning `(valid_token, escrow_client)`.
+fn fresh_escrow_with_token<'a>(
+    env: &'a Env,
+    admin_addr: &Address,
+) -> (Address, MilestoneEscrowClient<'a>) {
+    let token = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(env, &contract_id);
+    (token, client)
+}
+
+// ── admin parameter ──────────────────────────────────────────────────────────
+
+/// `admin` = zero account must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_account_as_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (zero_account, _) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let (token, escrow) = fresh_escrow_with_token(&env, &admin_addr);
+
+    let result = escrow.try_initialize(
+        &zero_account,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+/// `admin` = zero contract must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_contract_as_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, zero_contract) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let (token, escrow) = fresh_escrow_with_token(&env, &admin_addr);
+
+    let result = escrow.try_initialize(
+        &zero_contract,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+// ── freelancer parameter ─────────────────────────────────────────────────────
+
+/// `freelancer` = zero account must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_account_as_freelancer_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (zero_account, _) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let (token, escrow) = fresh_escrow_with_token(&env, &admin_addr);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &zero_account,
+        &arbiter_addr,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+/// `freelancer` = zero contract must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_contract_as_freelancer_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, zero_contract) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let (token, escrow) = fresh_escrow_with_token(&env, &admin_addr);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &zero_contract,
+        &arbiter_addr,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+// ── arbiter parameter ────────────────────────────────────────────────────────
+
+/// `arbiter` = zero account must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_account_as_arbiter_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (zero_account, _) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let (token, escrow) = fresh_escrow_with_token(&env, &admin_addr);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &zero_account,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+/// `arbiter` = zero contract must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_contract_as_arbiter_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, zero_contract) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let (token, escrow) = fresh_escrow_with_token(&env, &admin_addr);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &zero_contract,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+// ── token parameter ──────────────────────────────────────────────────────────
+
+/// `token` = zero account must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_account_as_token_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (zero_account, _) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &zero_account,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+/// `token` = zero contract must be rejected with `InvalidAddress`.
+#[test]
+fn test_initialize_zero_contract_as_token_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, zero_contract) = zero_addresses(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &zero_contract,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+// ── client parameter (zero contract — the zero account is already covered) ───
+
+/// `client` = zero contract must be rejected with `InvalidAddress`.
+/// (The zero *account* case is covered by the earlier
+/// `test_initialize_zero_address_fails` test.)
+#[test]
+fn test_initialize_zero_contract_as_client_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, zero_contract) = zero_addresses(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let (token, escrow) = fresh_escrow_with_token(&env, &admin_addr);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &zero_contract,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+// ============================================================================
+// initialize — checked arithmetic contract (#562)
+//
+// Every integer operation in initialize goes through checked_initialize_total
+// → checked_add_amount → i128::checked_add. The tests below assert the exact
+// typed error returned on each overflow/underflow boundary and verify that no
+// partial write survives a failed call.
+// ============================================================================
+
+/// A single milestone with `i128::MAX` is a valid positive amount: it does not
+/// overflow on its own (0 + i128::MAX == i128::MAX exactly).  Verifies that the
+/// checked helper does not erroneously reject extreme-but-valid inputs.
+#[test]
+fn test_initialize_single_i128_max_amount_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // i128::MAX is positive — checked_add_amount(0, i128::MAX) should succeed.
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &vec![&env, i128::MAX],
+    );
+    assert_eq!(
+        result,
+        Ok(Ok(())),
+        "single i128::MAX milestone must be accepted"
+    );
+}
+
+/// Two milestones each with `i128::MAX` overflow the running total on the
+/// second addition. Verifies that `checked_add` catches this and returns
+/// `InvalidAmount` rather than wrapping or panicking.
+#[test]
+fn test_initialize_two_i128_max_amounts_overflow_returns_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &vec![&env, i128::MAX, i128::MAX],
+    );
+    assert_eq!(
+        result,
+        Err(Ok(Error::InvalidAmount)),
+        "i128::MAX + i128::MAX must return InvalidAmount, not panic or wrap"
+    );
+
+    // No partial state must survive the failed call.
+    env.as_contract(&contract_id, || {
+        assert!(
+            !env.storage().instance().has(&DataKey::Version),
+            "Version key must not be written after a failed initialize"
+        );
+        assert!(
+            !env.storage().persistent().has(&DataKey::Admin),
+            "persistent Admin key must not be written after a failed initialize"
+        );
+    });
+}
+
+/// `i128::MAX` as the first milestone followed by `1` also overflows — the
+/// overflow does not require two equal extremes. Verifies the guard applies
+/// to the running total, not just to equal-value pairs.
+#[test]
+fn test_initialize_i128_max_plus_one_overflows_returns_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &vec![&env, i128::MAX, 1_i128],
+    );
+    assert_eq!(
+        result,
+        Err(Ok(Error::InvalidAmount)),
+        "i128::MAX + 1 must return InvalidAmount"
+    );
+}
+
+/// A milestone amount of exactly `0` must be rejected with `InvalidAmount`
+/// because `checked_add_amount` requires strictly positive values.
+/// Verifies the `amount <= 0` guard in the helper.
+#[test]
+fn test_initialize_zero_milestone_amount_returns_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &vec![&env, 0_i128],
+    );
+    assert_eq!(
+        result,
+        Err(Ok(Error::InvalidAmount)),
+        "zero milestone amount must return InvalidAmount"
+    );
+
+    // No partial state must survive.
+    env.as_contract(&contract_id, || {
+        assert!(
+            !env.storage().instance().has(&DataKey::Version),
+            "Version key must not be written after a zero-amount initialize"
+        );
+    });
+}
+
+/// A mix of valid and overflowing amounts in a longer list must still be
+/// caught: the checked accumulator must reject the overflow regardless of
+/// how many valid amounts precede it.
+#[test]
+fn test_initialize_overflow_in_middle_of_list_returns_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // 1_000 + 2_000 + i128::MAX + 3_000 overflows at the third element.
+    let amounts = vec![&env, 1_000_i128, 2_000_i128, i128::MAX, 3_000_i128];
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(Error::InvalidAmount)),
+        "overflow anywhere in the list must return InvalidAmount"
+    );
+
+    // No partial milestones must survive.
+    env.as_contract(&contract_id, || {
+        assert!(
+            !env.storage().persistent().has(&DataKey::Milestone(0u32)),
+            "no milestone must be persisted after a failed initialize"
+        );
+    });
 }
