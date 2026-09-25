@@ -279,3 +279,105 @@ fn test_emergency_pause_admin_override_invalid_state() {
     let res = client.try_emergency_pause_admin_override(&admin_addr, &true);
     assert_eq!(res, Err(Ok(Error::InvalidStatus)));
 }
+
+// ── #451: emergency_unpause storage-footprint tests ─────────────────────────
+
+/// A successful emergency_unpause must write exactly one instance key (Ep) and
+/// must never write EpLk — the reentrancy guard is not needed because there is
+/// no external call inside the transition body.
+#[test]
+fn test_emergency_unpause_does_not_write_eplk_on_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let milestone_amounts = vec![&env, 1000_i128];
+    let (client_addr, freelancer_addr, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, milestone_amounts);
+
+    client.emergency_pause(&client_addr, &freelancer_addr);
+    assert!(client.is_emergency_paused());
+
+    // Capture EpLk state before unpause — pause leaves it false.
+    let lock_before: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::EpLk)
+    });
+
+    client.emergency_unpause(&admin_addr);
+
+    // EpLk must be exactly the same value after the call as before.
+    let lock_after: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::EpLk)
+    });
+    assert_eq!(
+        lock_after, lock_before,
+        "emergency_unpause must not write EpLk"
+    );
+
+    // Ep must be false — the single write that emergency_unpause does perform.
+    let ep_after: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Ep)
+    });
+    assert_eq!(ep_after, Some(false));
+}
+
+/// A failed emergency_unpause (NotPaused) must not write any storage key —
+/// neither EpLk nor Ep.
+#[test]
+fn test_emergency_unpause_does_not_write_eplk_on_failure() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let milestone_amounts = vec![&env, 1000_i128];
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, milestone_amounts);
+
+    // Contract is not paused: unpause must return NotPaused.
+    let lock_before: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::EpLk)
+    });
+    let ep_before: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Ep)
+    });
+
+    let res = client.try_emergency_unpause(&admin_addr);
+    assert_eq!(res, Err(Ok(Error::NotPaused)));
+
+    let lock_after: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::EpLk)
+    });
+    let ep_after: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Ep)
+    });
+
+    assert_eq!(lock_after, lock_before, "EpLk must not be written on failure");
+    assert_eq!(ep_after, ep_before, "Ep must not be written on failure");
+}
+
+/// After emergency_pause acquires and releases EpLk, emergency_unpause must
+/// proceed without acquiring EpLk itself, leaving the lock clean for the next
+/// pause call.
+#[test]
+fn test_emergency_unpause_leaves_lock_clean_for_subsequent_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let milestone_amounts = vec![&env, 1000_i128];
+    let (client_addr, freelancer_addr, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, milestone_amounts);
+
+    client.emergency_pause(&client_addr, &freelancer_addr);
+    client.emergency_unpause(&admin_addr);
+
+    // EpLk must be false/absent so the next pause can acquire it.
+    let lock: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::EpLk)
+    });
+    assert!(
+        lock.unwrap_or(false) == false,
+        "EpLk must not be held after emergency_unpause"
+    );
+
+    // The next pause must succeed (not return EmergencyPauseInProgress).
+    client.emergency_pause(&client_addr, &freelancer_addr);
+    assert!(client.is_emergency_paused());
+}

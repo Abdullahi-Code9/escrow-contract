@@ -3906,26 +3906,19 @@ impl MilestoneEscrow {
 
         Self::assert_emergency_pause_not_locked(&env)?;
 
-        env.storage().instance().set(&DataKey::EpLk, &true);
+        // Single write — no external call inside the transition body, so no
+        // reentrancy lock is needed (mirrors emergency_pause_admin_override).
+        env.storage().instance().set(&DataKey::Ep, &false);
 
-        let result = (|| {
-            env.storage().instance().set(&DataKey::Ep, &false);
-            Ok(())
-        })();
+        env.events().publish(
+            (symbol_short!("emunpause"),),
+            EmergencyUnpausedEvent {
+                admin: admin.clone(),
+                contract_id: env.current_contract_address(),
+            },
+        );
 
-        env.storage().instance().set(&DataKey::EpLk, &false);
-
-        if result.is_ok() {
-            env.events().publish(
-                (symbol_short!("emunpause"),),
-                EmergencyUnpausedEvent {
-                    admin: admin.clone(),
-                    contract_id: env.current_contract_address(),
-                },
-            );
-        }
-
-        result
+        Ok(())
     }
 
     /// Override the emergency pause status.
