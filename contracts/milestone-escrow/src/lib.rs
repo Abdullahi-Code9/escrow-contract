@@ -5251,6 +5251,14 @@ impl MilestoneEscrow {
     /// default on first write). Rejects invalid share totals and modifications
     /// while an execution lock is held.
     ///
+    /// ## Storage-footprint note
+    ///
+    /// This function uses `require_admin_from_instance` rather than the
+    /// standard `require_admin` helper so that the admin verification read
+    /// (`DataKey::Admin`, instance) and all `InterestYieldState` reads/writes
+    /// (`DataKey::InterestYieldState`, instance) touch the **same single
+    /// ledger entry** (instance storage) instead of two (persistent + instance).
+    ///
     /// # Errors
     /// * `NotInitialized` – Contract admin key is missing.
     /// * `Unauthorized`   – Caller is not the stored admin.
@@ -5262,7 +5270,9 @@ impl MilestoneEscrow {
         client_share_bps: u32,
         freelancer_share_bps: u32,
     ) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+        // Both the Admin read and all InterestYieldState reads/writes are in
+        // instance storage, so the whole function touches a single ledger entry.
+        Self::require_admin_from_instance(&env, &admin)?;
         Self::validate_interest_yield_share_config(client_share_bps, freelancer_share_bps)?;
 
         if env.storage().instance().has(&DataKey::InterestYieldState) {
