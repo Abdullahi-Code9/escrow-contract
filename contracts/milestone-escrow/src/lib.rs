@@ -4183,7 +4183,26 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Read-only accessor for the configured platform fee split.
+    ///
+    /// INVARIANT: this function must never write to instance, persistent, or
+    /// temporary storage (directly or transitively), and must never emit
+    /// events. It exists purely to expose the current allocation to callers.
+    /// A regression test (`platform_fee_allocation_no_mutation_tests`) takes
+    /// a full ledger snapshot before and after invoking this function and
+    /// asserts the two are identical, so any future edit that introduces a
+    /// storage write here will fail CI. Do not add `.set(`, `.remove(`,
+    /// `.extend_ttl(`, or `env.events().publish(` calls to this function or
+    /// to `Self::read_platform_fee_allocation` below.
     pub fn get_platform_fee_allocation(env: Env) -> Result<PlatformFeeAllocation, Error> {
+        Self::read_platform_fee_allocation(&env)
+    }
+
+    /// Shared read-only helper backing [`Self::get_platform_fee_allocation`]
+    /// and [`Self::calculate_platform_fee_split`]. Centralizing the storage
+    /// read here means there is a single call site to audit for the
+    /// no-mutation invariant described above, rather than one per caller.
+    fn read_platform_fee_allocation(env: &Env) -> Result<PlatformFeeAllocation, Error> {
         env.storage()
             .instance()
             .get(&DataKey::PlatformFeeAllocation)
@@ -4199,11 +4218,7 @@ impl MilestoneEscrow {
         env: Env,
         total_amount: i128,
     ) -> Result<PlatformFeeDistribution, Error> {
-        let allocation: PlatformFeeAllocation = env
-            .storage()
-            .instance()
-            .get(&DataKey::PlatformFeeAllocation)
-            .ok_or(Error::NotInitialized)?;
+        let allocation = Self::read_platform_fee_allocation(&env)?;
         let distribution = Self::allocate_platform_fee(total_amount, &allocation)?;
 
         // Emit a structured event so downstream indexers can audit the
