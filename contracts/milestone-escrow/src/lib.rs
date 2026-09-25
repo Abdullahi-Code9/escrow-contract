@@ -1091,6 +1091,22 @@ pub struct CancelSplitRefundCalculatedEvent {
     pub freelancer_payout_bps: u32,
 }
 
+/// Emitted by `split_refund_net_distribution` when net split-refund distributions
+/// and platform fees are calculated. Records the input amounts and resulting
+/// net refund and fee shares so downstream indexers can reconstruct the operation
+/// without replaying storage.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SplitRefundNetDistributionEvent {
+    pub total_amount: i128,
+    pub client_refund_bps: u32,
+    pub freelancer_payout_bps: u32,
+    pub client_net_refund: i128,
+    pub client_fee_share: i128,
+    pub freelancer_net_payout: i128,
+    pub treasury_fee_share: i128,
+}
+
 /// Emitted by `multisig_transfer_admin` after a successful proportional
 /// allocation of `total_amount` across all ratio entries.  Downstream
 /// indexers can use this event to audit every admin-triggered multi-party
@@ -1397,6 +1413,35 @@ impl MilestoneEscrow {
     /// Calculate net distributions for a split refund by applying the platform
     /// fee allocation only to the freelancer's payout portion. The client's refund
     /// is fee-exempt.
+    ///
+    /// # Rounding Specification
+    /// When basis-point calculations do not divide evenly:
+    /// * Rounding Direction: Uses explicit round-to-nearest arithmetic (half rounds up)
+    ///   via `split_round_nearest` (`(amount * bps + 5_000) / 10_000`).
+    /// * Gross Split: `client_net_refund` is rounded to nearest stroop; `gross_payout`
+    ///   receives the exact remainder (`total_amount - client_net_refund`), ensuring
+    ///   no unit is created or destroyed.
+    /// * Fee Deductions: `client_fee_share` and `treasury_fee_share` are rounded to
+    ///   nearest stroop; `freelancer_net_payout` receives the remaining balance
+    ///   (`gross_payout - client_fee_share - treasury_fee_share`).
+    /// * Conservation Invariant: All four return values sum exactly to the input amount:
+    ///   `client_net_refund + client_fee_share + freelancer_net_payout + treasury_fee_share == total_amount`.
+    ///   Remainders are never silently discarded.
+    ///
+    /// # Parameters
+    /// * `total_amount`          – Total amount to split; must be > 0.
+    /// * `client_refund_bps`     – Client refund share in basis points (0–10 000).
+    /// * `freelancer_payout_bps` – Freelancer payout share in basis points (0–10 000).
+    ///                             The two BPS values must sum to `BPS_SCALE` (10 000).
+    /// * `fee_allocation`        – Platform fee allocation applied to the freelancer's gross payout.
+    ///
+    /// # Returns
+    /// A `SplitRefundFeeDistribution` detailing net amounts and fee shares.
+    ///
+    /// # Errors
+    /// * `Paused`        – Contract is currently paused.
+    /// * `InvalidAmount` – `total_amount` ≤ 0 or arithmetic underflow.
+    /// * `InvalidRatio`  – `client_refund_bps + freelancer_payout_bps != 10_000`.
     pub fn split_refund_net_distribution(
         env: Env,
         total_amount: i128,
@@ -1404,23 +1449,34 @@ impl MilestoneEscrow {
         freelancer_payout_bps: u32,
         fee_allocation: PlatformFeeAllocation,
     ) -> Result<SplitRefundFeeDistribution, Error> {
-        // 1. Get gross split. Uses the pure allocator rather than
-        // multisig_split_refund, which additionally requires the admin key and
-        // an active multisig lock -- neither applies to this calculation.
-        let gross_split = Self::cancel_escrow_split_refund(
-            env.clone(),
-            total_amount,
-            client_refund_bps,
-            freelancer_payout_bps,
-        )?;
+        Self::assert_not_paused(&env)?;
+        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
+        if emergency_paused {
+            return Err(Error::Paused);
+        }
 
-        // 2. Client net is their gross refund (fee-exempt)
-        let client_net_refund = gross_split.client_refund;
+        if total_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
 
-        // 3. Freelancer gross payout is subject to platform fee
-        let gross_payout = gross_split.freelancer_payout;
+        let total_bps = client_refund_bps
+            .checked_add(freelancer_payout_bps)
+            .ok_or(Error::InvalidRatio)?;
+        if total_bps != BPS_SCALE {
+            return Err(Error::InvalidRatio);
+        }
 
-        // Calculate fee shares using the fee_allocation
+        // 1. Calculate gross split with explicit round-to-nearest arithmetic.
+        // Client receives the nearest stroop; freelancer payout receives the exact
+        // remainder so client_net_refund + gross_payout == total_amount.
+        let client_split =
+            Self::split_round_nearest(total_amount, client_refund_bps as i128, BPS_SCALE as i128)?;
+        let client_net_refund = client_split.first;
+        let gross_payout = total_amount
+            .checked_sub(client_net_refund)
+            .ok_or(Error::InvalidAmount)?;
+
+        // 2. Calculate fee shares from gross payout using explicit round-to-nearest.
         let client_fee_share = Self::split_round_nearest(
             gross_payout,
             fee_allocation.client_bps as i128,
@@ -1435,18 +1491,36 @@ impl MilestoneEscrow {
         )?
         .first;
 
-        // Freelancer net is what's left
+        // 3. Freelancer net payout receives the remaining gross payout after fees.
+        // Remainder is never discarded, ensuring:
+        // client_net_refund + client_fee_share + freelancer_net_payout + treasury_fee_share == total_amount.
         let freelancer_net_payout = gross_payout
             .checked_sub(client_fee_share)
             .and_then(|v| v.checked_sub(treasury_fee_share))
             .ok_or(Error::InvalidAmount)?;
 
-        Ok(SplitRefundFeeDistribution {
+        let distribution = SplitRefundFeeDistribution {
             client_net_refund,
             client_fee_share,
             freelancer_net_payout,
             treasury_fee_share,
-        })
+        };
+
+        // 4. Emit a structured event carrying the inputs and the resulting state.
+        env.events().publish(
+            (symbol_short!("sprefnet"),),
+            SplitRefundNetDistributionEvent {
+                total_amount,
+                client_refund_bps,
+                freelancer_payout_bps,
+                client_net_refund: distribution.client_net_refund,
+                client_fee_share: distribution.client_fee_share,
+                freelancer_net_payout: distribution.freelancer_net_payout,
+                treasury_fee_share: distribution.treasury_fee_share,
+            },
+        );
+
+        Ok(distribution)
     }
 
     fn ensure_interest_yield_unlocked(env: &Env) -> Result<(), Error> {
@@ -4987,6 +5061,8 @@ impl MilestoneEscrow {
     /// A `RefundAllocation` whose two amounts sum to `total_amount` exactly.
     ///
     /// # Errors
+    /// * `Paused`        – Contract is currently paused.
+    /// * `EscrowLocked`  – Interest yield state is locked.
     /// * `InvalidRatio`  – Ratios do not sum to `BPS_SCALE`.
     /// * `InvalidAmount` – `total_amount` ≤ 0 or arithmetic overflow.
     pub fn interest_yield_split_refund(
@@ -4995,6 +5071,18 @@ impl MilestoneEscrow {
         client_refund_bps: u32,
         freelancer_payout_bps: u32,
     ) -> Result<RefundAllocation, Error> {
+        // Precondition: reject illegal source state if contract is paused.
+        Self::assert_not_paused(&env)?;
+        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
+        if emergency_paused {
+            return Err(Error::Paused);
+        }
+
+        // Precondition: reject illegal source state if interest yield state is locked.
+        if env.storage().instance().has(&DataKey::InterestYieldState) {
+            Self::ensure_interest_yield_unlocked(&env)?;
+        }
+
         if total_amount <= 0 {
             return Err(Error::InvalidAmount);
         }

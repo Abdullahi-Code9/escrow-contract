@@ -21,6 +21,8 @@ mod admin_tax_withholding_guards_tests;
 mod arbitration_split_event_tests;
 #[path = "execute_admin_transfer_tests.rs"]
 mod execute_admin_transfer_tests;
+#[path = "interest_yield_split_refund_guards_tests.rs"]
+mod interest_yield_split_refund_guards_tests;
 #[path = "milestone_time_extensions_tests.rs"]
 mod milestone_time_extensions_tests;
 #[path = "multisig_admin_override_refund_tests.rs"]
@@ -29,6 +31,8 @@ mod multisig_admin_override_refund_tests;
 mod multisig_split_refund_tests;
 #[path = "multisig_transfer_admin_tests.rs"]
 mod multisig_transfer_admin_tests;
+#[path = "split_refund_net_distribution_tests.rs"]
+mod split_refund_net_distribution_tests;
 #[path = "tax_withholding_tests.rs"]
 mod tax_withholding_tests;
 
