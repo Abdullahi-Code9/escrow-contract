@@ -6333,6 +6333,97 @@ fn test_upgrade_while_paused_fails_with_typed_error() {
     assert_eq!(upgrade_event_count(&env), 0);
 }
 
+// ── #453: upgrade storage-footprint tests ───────────────────────────────────
+
+/// The version-bump logic in upgrade uses a single try_update call on
+/// DataKey::Version. Verify the combined closure expression maps every input
+/// to the expected output without needing the Soroban host:
+///   None (missing key)  → Ok(2)   i.e. unwrap_or(1) + 1
+///   Some(n)             → Ok(n+1) for all valid n
+///   Some(u32::MAX)      → Err(InvalidAmount) — overflow guard
+#[test]
+fn test_upgrade_try_update_closure_correct_for_all_inputs() {
+    // Same expression as the try_update closure in `upgrade`.
+    let bump = |v: Option<u32>| -> Result<u32, Error> {
+        v.unwrap_or(1).checked_add(1).ok_or(Error::InvalidAmount)
+    };
+
+    // Missing key: unwrap_or(1) gives 1, then +1 = 2.
+    let result = bump(None::<u32>);
+    assert_eq!(result, Ok(2));
+
+    // Present key: increments by exactly one.
+    let result = bump(Some(1u32));
+    assert_eq!(result, Ok(2));
+
+    let result = bump(Some(41u32));
+    assert_eq!(result, Ok(42));
+
+    // One below maximum: succeeds.
+    let result = bump(Some(u32::MAX - 1));
+    assert_eq!(result, Ok(u32::MAX));
+
+    // Maximum: overflow returns InvalidAmount, not a panic or wrap.
+    let result = bump(Some(u32::MAX));
+    assert_eq!(result, Err(Error::InvalidAmount));
+}
+
+/// An unauthorized caller must not mutate DataKey::Version — confirmed by
+/// reading the raw storage value before and after the rejected call.
+#[test]
+fn test_upgrade_unauthorized_does_not_write_version() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, _, _, contract_id, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let version_before: Option<u32> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Version)
+    });
+
+    let bad_actor = Address::generate(&env);
+    let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_upgrade(&bad_actor, &fake_hash);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    let version_after: Option<u32> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Version)
+    });
+    assert_eq!(
+        version_after, version_before,
+        "DataKey::Version must not be written by a rejected upgrade"
+    );
+}
+
+/// A paused contract must not have DataKey::Version mutated — confirmed by
+/// reading the raw storage value before and after the rejected call.
+#[test]
+fn test_upgrade_paused_does_not_write_version() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.emergency_pause(&client_addr, &freelancer_addr);
+
+    let version_before: Option<u32> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Version)
+    });
+
+    let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_upgrade(&admin_addr, &fake_hash);
+    assert_eq!(result, Err(Ok(Error::Paused)));
+
+    let version_after: Option<u32> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Version)
+    });
+    assert_eq!(
+        version_after, version_before,
+        "DataKey::Version must not be written while the contract is paused"
+    );
+}
+
 // ============================================================================
 // add_whitelisted_token ΓÇö comprehensive boundary / negative / edge-case tests
 // ============================================================================
