@@ -18,7 +18,7 @@
 //! ledger state, not just the one key we expect to be read. Any future edit
 //! that adds a `.set(`, `.remove(`, `.extend_ttl(`, or event publish inside
 //! `get_platform_fee_allocation` (or the shared
-//! `read_platform_fee_allocation` helper it calls) will change the
+//! `load_platform_fee_allocation` helper it calls) will change the
 //! snapshot and fail this test.
 
 use super::*;

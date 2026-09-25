@@ -1417,6 +1417,20 @@ impl MilestoneEscrow {
             .ok_or(Error::NotInitialized)
     }
 
+    /// Read `DataKey::PlatformFeeAllocation` from instance storage.
+    ///
+    /// This is the single source of truth for the platform-fee allocation read
+    /// path.  Every function that needs the stored value — including the public
+    /// `get_platform_fee_allocation`, `calculate_platform_fee_split`, and the
+    /// write-path helpers — delegates here so the storage key is referenced in
+    /// exactly one place and each invocation issues exactly one ledger read.
+    fn load_platform_fee_allocation(env: &Env) -> Result<PlatformFeeAllocation, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PlatformFeeAllocation)
+            .ok_or(Error::NotInitialized)
+    }
+
     fn store_interest_yield_state(env: &Env, state: &EscrowInterestYieldState) {
         env.storage()
             .instance()
@@ -4015,11 +4029,7 @@ impl MilestoneEscrow {
             .set(&DataKey::PlatformFeeAllocationLock, &true);
 
         let result = (|| {
-            let current: PlatformFeeAllocation = env
-                .storage()
-                .instance()
-                .get(&DataKey::PlatformFeeAllocation)
-                .ok_or(Error::NotInitialized)?;
+            let current: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
 
             if current.locked {
                 return Err(Error::InvalidStatus);
@@ -4090,11 +4100,7 @@ impl MilestoneEscrow {
             .set(&DataKey::PlatformFeeAllocationLock, &true);
 
         let result = (|| {
-            let mut current: PlatformFeeAllocation = env
-                .storage()
-                .instance()
-                .get(&DataKey::PlatformFeeAllocation)
-                .ok_or(Error::NotInitialized)?;
+            let mut current: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
 
             // Emit a structured event so downstream indexers can track
             // lock state changes without polling storage.
@@ -4142,11 +4148,7 @@ impl MilestoneEscrow {
     ) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
 
-        let current: PlatformFeeAllocation = env
-            .storage()
-            .instance()
-            .get(&DataKey::PlatformFeeAllocation)
-            .ok_or(Error::NotInitialized)?;
+        let current: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
 
         if !current.locked {
             return Err(Error::InvalidStatus);
@@ -4229,20 +4231,9 @@ impl MilestoneEscrow {
     /// asserts the two are identical, so any future edit that introduces a
     /// storage write here will fail CI. Do not add `.set(`, `.remove(`,
     /// `.extend_ttl(`, or `env.events().publish(` calls to this function or
-    /// to `Self::read_platform_fee_allocation` below.
+    /// to `Self::load_platform_fee_allocation`.
     pub fn get_platform_fee_allocation(env: Env) -> Result<PlatformFeeAllocation, Error> {
-        Self::read_platform_fee_allocation(&env)
-    }
-
-    /// Shared read-only helper backing [`Self::get_platform_fee_allocation`]
-    /// and [`Self::calculate_platform_fee_split`]. Centralizing the storage
-    /// read here means there is a single call site to audit for the
-    /// no-mutation invariant described above, rather than one per caller.
-    fn read_platform_fee_allocation(env: &Env) -> Result<PlatformFeeAllocation, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::PlatformFeeAllocation)
-            .ok_or(Error::NotInitialized)
+        Self::load_platform_fee_allocation(&env)
     }
 
     /// Split an amount according to the configured platform-fee ratios.
@@ -4254,7 +4245,7 @@ impl MilestoneEscrow {
         env: Env,
         total_amount: i128,
     ) -> Result<PlatformFeeDistribution, Error> {
-        let allocation = Self::read_platform_fee_allocation(&env)?;
+        let allocation: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
         let distribution = Self::allocate_platform_fee(total_amount, &allocation)?;
 
         // Emit a structured event so downstream indexers can audit the

@@ -23,6 +23,8 @@ mod arbitration_split_event_tests;
 mod execute_admin_transfer_tests;
 #[path = "get_platform_fee_allocation_tests.rs"]
 mod get_platform_fee_allocation_tests;
+#[path = "load_platform_fee_allocation_tests.rs"]
+mod load_platform_fee_allocation_tests;
 #[path = "milestone_time_extensions_tests.rs"]
 mod milestone_time_extensions_tests;
 #[path = "multisig_admin_override_refund_tests.rs"]
