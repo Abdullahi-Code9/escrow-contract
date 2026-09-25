@@ -3788,7 +3788,7 @@ impl MilestoneEscrow {
             .update_current_contract(ContractExecutable::Wasm(new_wasm_hash.clone()));
 
         let current: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(1);
-        let new_version = current + 1;
+        let new_version = current.checked_add(1).ok_or(Error::InvalidAmount)?;
         env.storage()
             .instance()
             .set(&DataKey::Version, &new_version);
