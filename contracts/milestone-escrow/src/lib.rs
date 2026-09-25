@@ -6398,8 +6398,14 @@ impl MilestoneEscrow {
         }
 
         let gross_amount = milestone.amount;
-        let tax_amount = (gross_amount * (tax_rate_bps as i128)) / (BPS_SCALE as i128);
-        let net_amount = gross_amount - tax_amount;
+        let tax_amount = gross_amount
+            .checked_mul(tax_rate_bps as i128)
+            .ok_or(Error::InvalidAmount)?
+            .checked_div(BPS_SCALE as i128)
+            .ok_or(Error::InvalidAmount)?;
+        let net_amount = gross_amount
+            .checked_sub(tax_amount)
+            .ok_or(Error::InvalidAmount)?;
 
         if net_amount < 0 {
             return Err(Error::InvalidAmount);

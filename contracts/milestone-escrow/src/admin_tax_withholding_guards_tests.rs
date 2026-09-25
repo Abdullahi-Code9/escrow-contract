@@ -214,3 +214,122 @@ fn admin_tax_success_computes_and_emits_exactly_one_event() {
     // The execution lock is released before returning; no stale entry remains.
     assert!(!execution_lock_held(&env, &contract_id));
 }
+
+// ── checked-arithmetic boundary cases ───────────────────────────────────────
+//
+// The multiply/divide/subtract chain that derives `tax_amount` and
+// `net_amount` from the milestone's gross amount must use checked
+// operations end-to-end: any operand that would overflow or underflow an
+// i128 must surface as `Error::InvalidAmount` rather than panicking (debug
+// builds) or silently wrapping (release builds). These tests exercise the
+// two extreme `i128` operands directly against stored ledger state, since
+// neither `i128::MAX` nor `i128::MIN` can be produced through the normal
+// `initialize`/`fund` token-minting path.
+
+/// Overwrite milestone 0's `amount` after a normal funded setup, so the
+/// authorization/funded/milestone-range/balance guards all still pass and
+/// only the arithmetic itself is under test.
+fn set_milestone_amount(env: &Env, contract_id: &Address, index: u32, amount: i128) {
+    env.as_contract(contract_id, || {
+        let mut milestone: Milestone = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Milestone(index))
+            .unwrap();
+        milestone.amount = amount;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Milestone(index), &milestone);
+    });
+}
+
+#[test]
+fn admin_tax_rejects_overflow_at_i128_max_gross_amount() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    let milestone_amounts = vec![&env, 1_000_i128];
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, milestone_amounts);
+
+    // Push the stored milestone amount to i128::MAX. The contract's token
+    // balance stays at 1_000 (untouched), which is still > 0, so the
+    // balance guard passes and execution reaches the checked-arithmetic
+    // chain: gross_amount.checked_mul(tax_rate_bps) must overflow and be
+    // reported as `InvalidAmount` rather than wrapping or panicking.
+    set_milestone_amount(&env, &contract_id, 0, i128::MAX);
+
+    assert_eq!(
+        client.try_admin_tax_withholding_deductions(&admin_addr, &0u32, &2_500u32),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert!(!execution_lock_held(&env, &contract_id));
+    assert_eq!(taxwh_event_count(&env), 0);
+}
+
+#[test]
+fn admin_tax_rejects_i128_min_gross_amount() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    let milestone_amounts = vec![&env, 1_000_i128];
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, milestone_amounts);
+
+    // i128::MIN as a gross amount is caught by the existing
+    // `milestone.amount <= 0` precondition guard before any arithmetic
+    // runs. It must still resolve to `InvalidAmount`, not a panic — in
+    // particular it must never reach a bare negation or division that
+    // could overflow (i128::MIN has no positive counterpart).
+    set_milestone_amount(&env, &contract_id, 0, i128::MIN);
+
+    assert_eq!(
+        client.try_admin_tax_withholding_deductions(&admin_addr, &0u32, &2_500u32),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert!(!execution_lock_held(&env, &contract_id));
+    assert_eq!(taxwh_event_count(&env), 0);
+}
+
+#[test]
+fn admin_tax_valid_amounts_unchanged_after_checked_arithmetic() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    // Regression guard: ordinary, well within range amounts must produce
+    // byte-for-byte identical results to the pre-checked-arithmetic
+    // implementation.
+    let milestone_amounts = vec![&env, 1_000_000_i128];
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
+
+    let (gross_amount, tax_amount, net_amount) =
+        client.admin_tax_withholding_deductions(&admin_addr, &0u32, &1_500u32);
+
+    assert_eq!(gross_amount, 1_000_000);
+    assert_eq!(tax_amount, 150_000);
+    assert_eq!(net_amount, 850_000);
+    assert_eq!(gross_amount, tax_amount + net_amount);
+}
+
+#[test]
+fn admin_tax_rejects_zero_rate_overflow_still_checked() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    // Even with tax_rate_bps == 0 (net == gross, tax == 0), a gross amount
+    // large enough to overflow checked_mul(0) never actually overflows
+    // mathematically, but the call path must still resolve through the
+    // checked operators without panicking, returning the trivial split.
+    let milestone_amounts = vec![&env, 1_000_i128];
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, milestone_amounts);
+
+    set_milestone_amount(&env, &contract_id, 0, i128::MAX);
+
+    let (gross_amount, tax_amount, net_amount) =
+        client.admin_tax_withholding_deductions(&admin_addr, &0u32, &0u32);
+
+    assert_eq!(gross_amount, i128::MAX);
+    assert_eq!(tax_amount, 0);
+    assert_eq!(net_amount, i128::MAX);
+}
