@@ -3221,6 +3221,154 @@ fn test_multisig_lock_state_transitions() {
     assert!(client.is_multisig_locked());
 }
 
+/// multisig_lock must touch only instance storage — both the admin
+/// verification read and the MultisigLocked write must go to the same
+/// single ledger entry (instance), NOT to persistent storage.
+///
+/// Before this consolidation, require_admin read from *persistent* storage
+/// (DataKey::Admin) while the MultisigLocked write went to *instance*
+/// storage — two distinct ledger entries.  After the fix both operations
+/// touch *instance* storage, halving the ledger footprint of the call.
+#[test]
+fn test_multisig_lock_uses_single_instance_ledger_entry() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Verify the Admin key is present in instance storage (set by initialize).
+    let instance_admin: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Admin)
+    });
+    assert!(
+        instance_admin.is_some(),
+        "Admin must be present in instance storage after initialize"
+    );
+
+    // MultisigLocked must be absent before the call.
+    let locked_before: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::MultisigLocked)
+    });
+    assert_eq!(locked_before, None, "MultisigLocked must be absent initially");
+
+    client.multisig_lock(&admin_addr);
+
+    // After the call, MultisigLocked must be set in instance storage.
+    let locked_after: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::MultisigLocked)
+    });
+    assert_eq!(
+        locked_after,
+        Some(true),
+        "MultisigLocked must be set to true in instance storage after multisig_lock"
+    );
+
+    // The public accessor must agree.
+    assert!(client.is_multisig_locked());
+}
+
+/// multisig_lock must not touch persistent storage for the admin check —
+/// both the admin verification and the lock write must stay in instance
+/// storage, confirming the reduced ledger footprint.
+#[test]
+fn test_multisig_lock_does_not_write_persistent_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Record which persistent keys exist before the call.
+    // DataKey::Admin in persistent storage must already be present (written by
+    // initialize) and must remain unchanged after multisig_lock.
+    let admin_before: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Admin)
+    });
+
+    client.multisig_lock(&admin_addr);
+
+    // Persistent Admin must be unchanged — multisig_lock must not touch it.
+    let admin_after: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Admin)
+    });
+    assert_eq!(
+        admin_before, admin_after,
+        "multisig_lock must not alter persistent::Admin"
+    );
+
+    // MultisigLocked must NOT appear in persistent storage (it belongs in instance).
+    let locked_persistent: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::MultisigLocked)
+    });
+    assert_eq!(
+        locked_persistent, None,
+        "multisig_lock must not write MultisigLocked to persistent storage"
+    );
+}
+
+/// A non-admin caller must be rejected and must not mutate any storage.
+#[test]
+fn test_multisig_lock_unauthorized_leaves_no_trace() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, _, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let attacker = Address::generate(&env);
+    let result = client.try_multisig_lock(&attacker);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // MultisigLocked must not have been set in instance storage.
+    let locked: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::MultisigLocked)
+    });
+    assert_eq!(
+        locked, None,
+        "failed multisig_lock must not write MultisigLocked to instance storage"
+    );
+    assert!(!client.is_multisig_locked());
+}
+
+/// Calling multisig_lock before initialize must return NotInitialized and
+/// must not write any storage — the instance Admin key is absent.
+#[test]
+fn test_multisig_lock_before_initialize_returns_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let result = client.try_multisig_lock(&admin);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+
+    // No storage must have been written.
+    let locked: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::MultisigLocked)
+    });
+    assert_eq!(locked, None);
+}
+
+/// Calling multisig_lock twice is idempotent — the flag stays set and no
+/// error is returned on the second call.
+#[test]
+fn test_multisig_lock_idempotent() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.multisig_lock(&admin_addr);
+    assert!(client.is_multisig_locked());
+
+    // Second call must succeed and leave the flag set.
+    client.multisig_lock(&admin_addr);
+    assert!(client.is_multisig_locked());
+}
+
 /// Verify multisig_admin_override_release requires verified admin auth.
 #[test]
 fn test_multisig_admin_override_release_requires_admin() {

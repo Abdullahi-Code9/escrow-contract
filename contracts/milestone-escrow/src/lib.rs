@@ -1131,6 +1131,32 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Variant of `require_admin` that reads `DataKey::Admin` from **instance**
+    /// storage instead of persistent storage.
+    ///
+    /// During `initialize` the admin address is written to both
+    /// `instance()` and `persistent()` storage (see `initialize`).  Callers
+    /// that also write other instance-storage keys in the same call can use
+    /// this helper so that both the admin read and the subsequent instance write
+    /// touch a **single** ledger entry rather than two.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – The instance `Admin` key is absent (contract has
+    ///   not been initialised).
+    /// * `Unauthorized`   – `admin` does not match the stored admin.
+    fn require_admin_from_instance(env: &Env, admin: &Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if stored_admin != *admin {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
+    }
+
     /// Validation hook: verify that **both** the client and the freelancer
     /// recorded on the job have signed the current transaction.
     ///
@@ -6854,14 +6880,24 @@ impl MilestoneEscrow {
     /// deadlock condition is detected.  Only the stored admin can invoke
     /// the corresponding override endpoints.
     ///
+    /// ## Storage-footprint note
+    ///
+    /// This function deliberately uses `require_admin_from_instance` rather
+    /// than the standard `require_admin` helper.  Both the admin verification
+    /// read (`DataKey::Admin`) and the lock write (`DataKey::MultisigLocked`)
+    /// therefore target **instance** storage, meaning a single invocation
+    /// touches exactly **one** ledger entry instead of two (persistent + instance).
+    ///
     /// # Parameters
-    /// * `admin` – Must match `DataKey::Admin`.
+    /// * `admin` – Must match `DataKey::Admin` (instance storage).
     ///
     /// # Errors
     /// * `NotInitialized` – Contract has not been initialised.
     /// * `Unauthorized`   – `admin` is not the stored admin.
     pub fn multisig_lock(env: Env, admin: Address) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+        // Both the Admin read and the MultisigLocked write are in instance
+        // storage, so the whole function touches a single ledger entry.
+        Self::require_admin_from_instance(&env, &admin)?;
         env.storage()
             .instance()
             .set(&DataKey::MultisigLocked, &true);
