@@ -3262,7 +3262,10 @@ fn test_multisig_lock_uses_single_instance_ledger_entry() {
     let locked_before: Option<bool> = env.as_contract(&contract_id, || {
         env.storage().instance().get(&DataKey::MultisigLocked)
     });
-    assert_eq!(locked_before, None, "MultisigLocked must be absent initially");
+    assert_eq!(
+        locked_before, None,
+        "MultisigLocked must be absent initially"
+    );
 
     client.multisig_lock(&admin_addr);
 
@@ -3325,8 +3328,7 @@ fn test_multisig_lock_unauthorized_leaves_no_trace() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, _, _, contract_id, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (_, _, _, _, _, contract_id, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     let attacker = Address::generate(&env);
     let result = client.try_multisig_lock(&attacker);
