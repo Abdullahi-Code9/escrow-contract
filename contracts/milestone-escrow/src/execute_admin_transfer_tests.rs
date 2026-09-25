@@ -182,6 +182,31 @@ fn execute_transfer_swaps_admin_and_emits_event() {
 }
 
 #[test]
+fn execute_transfer_skips_redundant_admin_write_for_same_admin() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    let (old_admin, s1, s2, _, _, client) = setup_multisig_transfer(&env);
+    // The proposal helper permits a same-admin proposal; execution should
+    // still clear it without rewriting the unchanged Admin entry.
+    client
+        .try_cancel_admin_transfer_proposal(&old_admin)
+        .unwrap()
+        .unwrap();
+
+    let same_admin = old_admin.clone();
+    client.propose_admin_transfer(&old_admin, &same_admin, &2u32);
+    client.multisig_approve(&s1, &2u32);
+    client.multisig_approve(&s2, &2u32);
+
+    assert_eq!(client.try_execute_admin_transfer(), Ok(Ok(())));
+    assert_eq!(adminexc_event_count(&env), 1);
+    assert_eq!(last_adminexc_event(&env).old_admin, old_admin);
+    assert_eq!(last_adminexc_event(&env).new_admin, same_admin);
+    assert_eq!(client.get_pending_admin_transfer(), None);
+}
+
+#[test]
 fn new_admin_can_propose_after_transfer_old_admin_cannot() {
     let env = test_env();
     env.mock_all_auths();
