@@ -29,6 +29,8 @@ mod multisig_admin_override_refund_tests;
 mod multisig_split_refund_tests;
 #[path = "multisig_transfer_admin_tests.rs"]
 mod multisig_transfer_admin_tests;
+#[path = "propose_admin_transfer_footprint_tests.rs"]
+mod propose_admin_transfer_footprint_tests;
 #[path = "tax_withholding_tests.rs"]
 mod tax_withholding_tests;
 

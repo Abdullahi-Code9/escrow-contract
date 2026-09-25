@@ -4654,8 +4654,22 @@ impl MilestoneEscrow {
         new_admin: Address,
         proposal_id: u32,
     ) -> Result<(), Error> {
-        Self::require_initialized(&env)?;
-        Self::require_admin(&env, &admin)?;
+        // Storage-footprint note: `DataKey::Version` (instance) and
+        // `DataKey::Admin` (persistent) are only ever written together, in a
+        // single atomic `initialize` call — a failed `initialize` reverts the
+        // whole invocation, so one can never be present without the other.
+        // `load_admin` alone is therefore a complete "is this contract
+        // initialised" check (it already backs this same guarantee in
+        // `execute_admin_transfer`), so a separate `require_initialized`
+        // call — and the extra `Version` ledger entry it touches — is
+        // redundant here. Auth is still checked only *after* this guard, to
+        // preserve the existing behaviour of rejecting an uninitialised
+        // contract before requiring any signature.
+        let stored_admin = Self::load_admin(&env)?;
+        admin.require_auth();
+        if stored_admin != admin {
+            return Err(Error::Unauthorized);
+        }
 
         let zero_account = Address::from_str(
             &env,
