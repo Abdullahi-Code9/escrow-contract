@@ -3806,6 +3806,18 @@ impl MilestoneEscrow {
         result
     }
 
+    /// Override the emergency pause status.
+    ///
+    /// # Effects
+    /// Sets the `DataKey::Ep` to the provided `paused` boolean. Emits an `EmergencyPauseAdminOverrideEvent`.
+    ///
+    /// # Returns
+    /// * `Ok(())` on a successful override of the emergency pause state.
+    ///
+    /// # Errors
+    /// * `NotInitialized` - Admin key has never been stored.
+    /// * `Unauthorized` - Caller is not the verified admin.
+    /// * `InvalidStatus` - `paused` matches the contract's current emergency pause state.
     pub fn emergency_pause_admin_override(
         env: Env,
         admin: Address,
@@ -3845,6 +3857,23 @@ impl MilestoneEscrow {
         env.storage().instance().get(&DataKey::Ep).unwrap_or(false)
     }
 
+    /// Sets the global platform fee allocation in basis points (BPS).
+    ///
+    /// # Effects
+    /// Updates the `PlatformFeeAllocation` stored at `DataKey::PlatformFeeAllocation`.
+    /// Sets the `DataKey::PlatformFeeAllocationLock` to prevent re-entrant or concurrent updates.
+    /// Emits a `PlatformFeeAllocationSetEvent`.
+    ///
+    /// # Returns
+    /// * `Ok(())` on a successful update of the platform fee allocation.
+    ///
+    /// # Errors
+    /// * `NotInitialized` - Admin key has never been stored.
+    /// * `Unauthorized` - Caller is not the verified admin.
+    /// * `PlatformFeeAllocationInProgress` - A platform fee update lock is currently active.
+    /// * `EmergencyPauseInProgress` - An emergency pause lock is currently active.
+    /// * `InvalidRatio` - The sum of the BPS values does not equal 10,000 (BPS_SCALE).
+    /// * `FeeTooHigh` - The treasury or client BPS exceeds the maximum allowed limits.
     pub fn set_platform_fee_allocation(
         env: Env,
         admin: Address,

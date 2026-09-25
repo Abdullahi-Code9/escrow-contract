@@ -12855,3 +12855,24 @@ fn test_propose_admin_transfer_happy_path() {
     assert_eq!(pending.new_admin, new_admin);
     assert_eq!(pending.proposal_id, 42u32);
 }
+
+#[test]
+fn test_pf_alloc_not_initialized_and_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, crate::MilestoneEscrow);
+    let client = crate::MilestoneEscrowClient::new(&env, &contract_id);
+    let admin_addr = Address::generate(&env);
+
+    // Call without having initialized the contract with an admin key
+    let result = client.try_set_platform_fee_allocation(&admin_addr, &2000, &7000, &1000);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+
+    // Initialize it
+    client.initialize(&admin_addr);
+
+    // Call with unauthorized user
+    let attacker = Address::generate(&env);
+    let result2 = client.try_set_platform_fee_allocation(&attacker, &2000, &7000, &1000);
+    assert_eq!(result2, Err(Ok(Error::Unauthorized)));
+}
