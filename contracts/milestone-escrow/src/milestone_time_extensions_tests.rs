@@ -487,26 +487,17 @@ fn time_until_auto_release_valid_inputs_match_plain_arithmetic() {
     // deadline = 0 + 604_800 = 604_800; current = 0; result = 604_800.
     escrow.mark_delivered(&freelancer_addr, &0);
 
-    assert_eq!(
-        escrow.try_time_until_auto_release(&0),
-        Ok(Ok(604_800_i64))
-    );
+    assert_eq!(escrow.try_time_until_auto_release(&0), Ok(Ok(604_800_i64)));
 
     // Advance by 100 seconds; result must be 604_700.
     env.ledger().with_mut(|li| {
         li.timestamp += 100;
     });
-    assert_eq!(
-        escrow.try_time_until_auto_release(&0),
-        Ok(Ok(604_700_i64))
-    );
+    assert_eq!(escrow.try_time_until_auto_release(&0), Ok(Ok(604_700_i64)));
 
     // Advance past the deadline; result is negative (time already elapsed).
     env.ledger().with_mut(|li| {
         li.timestamp += 604_800;
     });
-    assert_eq!(
-        escrow.try_time_until_auto_release(&0),
-        Ok(Ok(-100_i64))
-    );
+    assert_eq!(escrow.try_time_until_auto_release(&0), Ok(Ok(-100_i64)));
 }
