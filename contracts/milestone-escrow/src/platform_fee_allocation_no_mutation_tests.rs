@@ -22,7 +22,7 @@
 //! snapshot and fail this test.
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, vec, Address, Env};
+use soroban_sdk::{vec, Address, Env};
 
 /// A fully initialised escrow with an explicit (non-default) platform fee
 /// allocation configured, plus the admin address used to configure it.
