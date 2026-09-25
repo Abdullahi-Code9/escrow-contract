@@ -314,9 +314,8 @@ fn test_emergency_unpause_does_not_write_eplk_on_success() {
     );
 
     // Ep must be false — the single write that emergency_unpause does perform.
-    let ep_after: Option<bool> = env.as_contract(&contract_id, || {
-        env.storage().instance().get(&DataKey::Ep)
-    });
+    let ep_after: Option<bool> =
+        env.as_contract(&contract_id, || env.storage().instance().get(&DataKey::Ep));
     assert_eq!(ep_after, Some(false));
 }
 
@@ -335,9 +334,8 @@ fn test_emergency_unpause_does_not_write_eplk_on_failure() {
     let lock_before: Option<bool> = env.as_contract(&contract_id, || {
         env.storage().instance().get(&DataKey::EpLk)
     });
-    let ep_before: Option<bool> = env.as_contract(&contract_id, || {
-        env.storage().instance().get(&DataKey::Ep)
-    });
+    let ep_before: Option<bool> =
+        env.as_contract(&contract_id, || env.storage().instance().get(&DataKey::Ep));
 
     let res = client.try_emergency_unpause(&admin_addr);
     assert_eq!(res, Err(Ok(Error::NotPaused)));
@@ -345,11 +343,13 @@ fn test_emergency_unpause_does_not_write_eplk_on_failure() {
     let lock_after: Option<bool> = env.as_contract(&contract_id, || {
         env.storage().instance().get(&DataKey::EpLk)
     });
-    let ep_after: Option<bool> = env.as_contract(&contract_id, || {
-        env.storage().instance().get(&DataKey::Ep)
-    });
+    let ep_after: Option<bool> =
+        env.as_contract(&contract_id, || env.storage().instance().get(&DataKey::Ep));
 
-    assert_eq!(lock_after, lock_before, "EpLk must not be written on failure");
+    assert_eq!(
+        lock_after, lock_before,
+        "EpLk must not be written on failure"
+    );
     assert_eq!(ep_after, ep_before, "Ep must not be written on failure");
 }
 
@@ -373,7 +373,7 @@ fn test_emergency_unpause_leaves_lock_clean_for_subsequent_pause() {
         env.storage().instance().get(&DataKey::EpLk)
     });
     assert!(
-        lock.unwrap_or(false) == false,
+        !lock.unwrap_or(false),
         "EpLk must not be held after emergency_unpause"
     );
 
