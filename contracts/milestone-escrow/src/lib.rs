@@ -1131,6 +1131,32 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Variant of `require_admin` that reads `DataKey::Admin` from **instance**
+    /// storage instead of persistent storage.
+    ///
+    /// During `initialize` the admin address is written to both
+    /// `instance()` and `persistent()` storage (see `initialize`).  Callers
+    /// that also write other instance-storage keys in the same call can use
+    /// this helper so that both the admin read and the subsequent instance write
+    /// touch a **single** ledger entry rather than two.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – The instance `Admin` key is absent (contract has
+    ///   not been initialised).
+    /// * `Unauthorized`   – `admin` does not match the stored admin.
+    fn require_admin_from_instance(env: &Env, admin: &Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if stored_admin != *admin {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
+    }
+
     /// Validation hook: verify that **both** the client and the freelancer
     /// recorded on the job have signed the current transaction.
     ///
@@ -4854,6 +4880,14 @@ impl MilestoneEscrow {
     /// default on first write). Rejects invalid share totals and modifications
     /// while an execution lock is held.
     ///
+    /// ## Storage-footprint note
+    ///
+    /// This function uses `require_admin_from_instance` rather than the
+    /// standard `require_admin` helper so that the admin verification read
+    /// (`DataKey::Admin`, instance) and all `InterestYieldState` reads/writes
+    /// (`DataKey::InterestYieldState`, instance) touch the **same single
+    /// ledger entry** (instance storage) instead of two (persistent + instance).
+    ///
     /// # Errors
     /// * `NotInitialized` – Contract admin key is missing.
     /// * `Unauthorized`   – Caller is not the stored admin.
@@ -4865,7 +4899,9 @@ impl MilestoneEscrow {
         client_share_bps: u32,
         freelancer_share_bps: u32,
     ) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+        // Both the Admin read and all InterestYieldState reads/writes are in
+        // instance storage, so the whole function touches a single ledger entry.
+        Self::require_admin_from_instance(&env, &admin)?;
         Self::validate_interest_yield_share_config(client_share_bps, freelancer_share_bps)?;
 
         if env.storage().instance().has(&DataKey::InterestYieldState) {

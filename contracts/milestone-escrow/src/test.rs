@@ -10463,6 +10463,246 @@ fn test_escrow_interest_yield_unauthorized_admin_fails() {
     assert_eq!(res, Err(Ok(Error::Unauthorized)));
 }
 
+// ── set_escrow_interest_yield storage-footprint tests (issue #463) ──────────
+//
+// set_escrow_interest_yield previously touched two distinct ledger entries:
+//   1. persistent::Admin  — read by require_admin / load_admin
+//   2. instance (Admin, InterestYieldState, …)
+//
+// After the consolidation, Admin is read from instance storage via
+// require_admin_from_instance, so the whole function operates on a single
+// instance ledger entry.
+
+/// set_escrow_interest_yield must write InterestYieldState to instance storage
+/// and the Admin read must stay in instance storage (not persistent), meaning
+/// both operations target a single ledger entry.
+#[test]
+fn test_set_escrow_interest_yield_writes_instance_storage_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, client_addr, freelancer_addr, token, auto_release) = setup_test_env(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let arbiter = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter,
+        &token,
+        &auto_release,
+        &vec![&env, 1_000_i128],
+    );
+
+    // Verify Admin is in instance storage before the call.
+    let instance_admin: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Admin)
+    });
+    assert!(
+        instance_admin.is_some(),
+        "Admin must be present in instance storage after initialize"
+    );
+
+    // InterestYieldState must be absent before the first call.
+    let state_before: Option<EscrowInterestYieldState> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::InterestYieldState)
+    });
+    assert_eq!(state_before, None);
+
+    client.set_escrow_interest_yield(&admin, &6_000u32, &4_000u32);
+
+    // InterestYieldState must now be present in instance storage.
+    let state_after: Option<EscrowInterestYieldState> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::InterestYieldState)
+    });
+    assert!(
+        state_after.is_some(),
+        "InterestYieldState must be written to instance storage"
+    );
+    let state = state_after.unwrap();
+    assert_eq!(state.client_share_bps, 6_000);
+    assert_eq!(state.freelancer_share_bps, 4_000);
+    assert!(!state.locked);
+}
+
+/// set_escrow_interest_yield must NOT write InterestYieldState to persistent
+/// storage — confirming it stays entirely within the instance ledger entry.
+#[test]
+fn test_set_escrow_interest_yield_does_not_touch_persistent_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, client_addr, freelancer_addr, token, auto_release) = setup_test_env(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let arbiter = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter,
+        &token,
+        &auto_release,
+        &vec![&env, 1_000_i128],
+    );
+
+    // Snapshot persistent::Admin before the call.
+    let admin_before: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Admin)
+    });
+
+    client.set_escrow_interest_yield(&admin, &5_000u32, &5_000u32);
+
+    // persistent::Admin must be unchanged.
+    let admin_after: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Admin)
+    });
+    assert_eq!(
+        admin_before, admin_after,
+        "set_escrow_interest_yield must not alter persistent::Admin"
+    );
+
+    // InterestYieldState must NOT appear in persistent storage.
+    let yield_persistent: Option<EscrowInterestYieldState> = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::InterestYieldState)
+    });
+    assert_eq!(
+        yield_persistent, None,
+        "set_escrow_interest_yield must not write InterestYieldState to persistent storage"
+    );
+}
+
+/// A failed call (unauthorized admin) must not mutate any storage —
+/// no InterestYieldState entry must appear.
+#[test]
+fn test_set_escrow_interest_yield_unauthorized_leaves_no_trace() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, client_addr, freelancer_addr, token, auto_release) = setup_test_env(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let arbiter = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter,
+        &token,
+        &auto_release,
+        &vec![&env, 1_000_i128],
+    );
+
+    let attacker = Address::generate(&env);
+    let result = client.try_set_escrow_interest_yield(&attacker, &5_000u32, &5_000u32);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // No InterestYieldState must have been written.
+    let state: Option<EscrowInterestYieldState> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::InterestYieldState)
+    });
+    assert_eq!(
+        state, None,
+        "unauthorized call must not write InterestYieldState"
+    );
+}
+
+/// A failed call (invalid ratio) must not mutate any storage.
+#[test]
+fn test_set_escrow_interest_yield_invalid_ratio_leaves_no_trace() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, client_addr, freelancer_addr, token, auto_release) = setup_test_env(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let arbiter = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter,
+        &token,
+        &auto_release,
+        &vec![&env, 1_000_i128],
+    );
+
+    let result = client.try_set_escrow_interest_yield(&admin, &7_000u32, &5_000u32);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+
+    // No InterestYieldState must have been written.
+    let state: Option<EscrowInterestYieldState> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::InterestYieldState)
+    });
+    assert_eq!(
+        state, None,
+        "failed call (bad ratio) must not write InterestYieldState"
+    );
+}
+
+/// Calling before initialize must return NotInitialized and write nothing —
+/// the instance Admin key is absent so require_admin_from_instance returns early.
+#[test]
+fn test_set_escrow_interest_yield_before_initialize_returns_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    let result = client.try_set_escrow_interest_yield(&admin, &5_000u32, &5_000u32);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+
+    // Nothing must have been written to instance storage.
+    let state: Option<EscrowInterestYieldState> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::InterestYieldState)
+    });
+    assert_eq!(state, None);
+}
+
+/// Successive calls update the state correctly and remain on instance storage.
+#[test]
+fn test_set_escrow_interest_yield_update_is_idempotent_and_instance_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, client_addr, freelancer_addr, token, auto_release) = setup_test_env(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let arbiter = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter,
+        &token,
+        &auto_release,
+        &vec![&env, 1_000_i128],
+    );
+
+    client.set_escrow_interest_yield(&admin, &5_000u32, &5_000u32);
+    client.set_escrow_interest_yield(&admin, &3_000u32, &7_000u32);
+
+    let state: EscrowInterestYieldState = env
+        .as_contract(&contract_id, || {
+            env.storage().instance().get(&DataKey::InterestYieldState)
+        })
+        .expect("InterestYieldState must be present after second call");
+
+    assert_eq!(state.client_share_bps, 3_000);
+    assert_eq!(state.freelancer_share_bps, 7_000);
+    assert!(!state.locked);
+
+    // Public accessor must agree.
+    let public_state = client.get_escrow_interest_yield();
+    assert_eq!(public_state.client_share_bps, 3_000);
+    assert_eq!(public_state.freelancer_share_bps, 7_000);
+}
+
 // ============================================================================
 // Zero/empty balance guards — payment_streaming_milestones (Issue #272)
 // ============================================================================
