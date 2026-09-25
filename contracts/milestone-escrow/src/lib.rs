@@ -2586,7 +2586,7 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    pub fn time_until_auto_release(env: Env, milestone_index: u32) -> i64 {
+    pub fn time_until_auto_release(env: Env, milestone_index: u32) -> Result<i64, Error> {
         let meta = Self::load_job_meta(&env).unwrap();
         let milestone = Self::load_milestone(&env, milestone_index).unwrap();
         // Read delivery timestamp from temporary storage (optimised path) and
@@ -2594,9 +2594,14 @@ impl MilestoneEscrow {
         let delivered_at =
             Self::load_delivered_at(&env, milestone_index).unwrap_or(milestone.delivered_at);
         let extension = Self::load_time_extension(&env, milestone_index);
-        let deadline = delivered_at + meta.auto_release_seconds + (extension as u64);
+        let deadline = delivered_at
+            .checked_add(meta.auto_release_seconds)
+            .and_then(|d| d.checked_add(extension as u64))
+            .ok_or(Error::InvalidAmount)?;
         let current = env.ledger().timestamp();
-        (deadline as i64) - (current as i64)
+        (deadline as i64)
+            .checked_sub(current as i64)
+            .ok_or(Error::InvalidAmount)
     }
 
     /// Release a partial payment for a delivered milestone.

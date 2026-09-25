@@ -409,3 +409,104 @@ fn test_time_extensions_consent_matches_unauthenticated_calculator() {
     assert_eq!(calc.first, gated.first);
     assert_eq!(calc.second, gated.second);
 }
+
+// ── #581: checked arithmetic in time_until_auto_release ──────────────────────
+
+/// `delivered_at + auto_release_seconds` overflows u64: the first checked_add
+/// inside `time_until_auto_release` must return `InvalidAmount` rather than
+/// wrapping or panicking.
+#[test]
+fn time_until_auto_release_deadline_overflow_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    // Place the ledger at u64::MAX so delivered_at = u64::MAX; any positive
+    // auto_release_seconds will overflow the first checked_add.
+    env.ledger().with_mut(|li| {
+        li.timestamp = u64::MAX;
+    });
+    escrow.mark_delivered(&freelancer_addr, &0);
+
+    assert_eq!(
+        escrow.try_time_until_auto_release(&0),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+/// `deadline - current` overflows i64: when `deadline as i64` wraps to
+/// `i64::MIN` the checked_sub must return `InvalidAmount` rather than wrapping.
+///
+/// `deadline as i64 == i64::MIN` when `deadline == 2^63`.  We arrange that by
+/// setting `delivered_at = 2^63 - auto_release_seconds` so that
+/// `delivered_at + auto_release_seconds = 2^63 exactly`, then set current = 1
+/// so `i64::MIN.checked_sub(1)` overflows.
+#[test]
+fn time_until_auto_release_subtraction_overflow_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // setup_funded_escrow uses auto_release_seconds = 604_800.
+    // Set delivered_at = 2^63 - 604_800 so deadline = 2^63 exactly.
+    // 2^63 as i64 = i64::MIN; i64::MIN.checked_sub(1) overflows.
+    let amounts = vec![&env, 5_000_i128];
+    let (_, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    const AUTO_RELEASE: u64 = 604_800;
+    let delivered_at: u64 = (i64::MIN as u64).wrapping_sub(AUTO_RELEASE); // 2^63 - 604_800
+    env.ledger().with_mut(|li| {
+        li.timestamp = delivered_at;
+    });
+    escrow.mark_delivered(&freelancer_addr, &0);
+
+    // current = 1; deadline as i64 = i64::MIN; i64::MIN - 1 overflows.
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1;
+    });
+
+    assert_eq!(
+        escrow.try_time_until_auto_release(&0),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+/// Valid inputs: `try_time_until_auto_release` returns `Ok(expected)`,
+/// identical to the result produced by the non-try variant before the change.
+/// Confirms the checked rewrite is a no-op for all non-overflowing inputs.
+#[test]
+fn time_until_auto_release_valid_inputs_match_plain_arithmetic() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    // Ledger starts at 0; delivered_at = 0; auto_release_seconds = 604_800.
+    // deadline = 0 + 604_800 = 604_800; current = 0; result = 604_800.
+    escrow.mark_delivered(&freelancer_addr, &0);
+
+    assert_eq!(
+        escrow.try_time_until_auto_release(&0),
+        Ok(Ok(604_800_i64))
+    );
+
+    // Advance by 100 seconds; result must be 604_700.
+    env.ledger().with_mut(|li| {
+        li.timestamp += 100;
+    });
+    assert_eq!(
+        escrow.try_time_until_auto_release(&0),
+        Ok(Ok(604_700_i64))
+    );
+
+    // Advance past the deadline; result is negative (time already elapsed).
+    env.ledger().with_mut(|li| {
+        li.timestamp += 604_800;
+    });
+    assert_eq!(
+        escrow.try_time_until_auto_release(&0),
+        Ok(Ok(-100_i64))
+    );
+}
