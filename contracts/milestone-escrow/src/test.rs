@@ -6156,6 +6156,35 @@ fn test_version_returns_one_after_initialize() {
     assert_eq!(client.version(), 1u32);
 }
 
+fn upgrade_event_count(env: &Env) -> u32 {
+    let topic_val: Val = symbol_short!("upgrade").into_val(env);
+    let mut count = 0u32;
+    for event in crate::all_event_tuples(env).iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == topic_val.get_payload() {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+#[test]
+fn test_contract_upgraded_event_fields_reconcile() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let hash = soroban_sdk::BytesN::from_array(&env, &[7u8; 32]);
+    let version = 2u32;
+    let event = ContractUpgradedEvent {
+        admin: admin.clone(),
+        new_wasm_hash: hash.clone(),
+        version,
+    };
+    assert_eq!(event.admin, admin);
+    assert_eq!(event.new_wasm_hash, hash);
+    assert_eq!(event.version, 2);
+}
+
 #[test]
 fn test_upgrade_not_initialized_fails() {
     let env = Env::default();
@@ -6168,6 +6197,7 @@ fn test_upgrade_not_initialized_fails() {
     let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
     let result = client.try_upgrade(&admin, &fake_hash);
     assert_eq!(result, Err(Ok(Error::NotInitialized)));
+    assert_eq!(upgrade_event_count(&env), 0);
 }
 
 #[test]
@@ -6181,6 +6211,7 @@ fn test_upgrade_unauthorized_fails() {
     let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
     let result = client.try_upgrade(&bad_actor, &fake_hash);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    assert_eq!(upgrade_event_count(&env), 0);
 }
 
 #[test]
@@ -6195,6 +6226,7 @@ fn test_upgrade_admin_auth_check_passes() {
     let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
     let result = client.try_upgrade(&admin_addr, &fake_hash);
     assert_ne!(result, Err(Ok(Error::Unauthorized)));
+    assert_eq!(upgrade_event_count(&env), 0);
 }
 
 /// Issue #352: an unauthorized caller must be rejected by the guard clause
@@ -6215,6 +6247,7 @@ fn test_upgrade_unauthorized_caller_mutates_no_storage() {
 
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
     assert_eq!(client.version(), version_before);
+    assert_eq!(upgrade_event_count(&env), 0);
 }
 
 /// Issue #352: `upgrade` must be blocked while the contract is
@@ -6239,6 +6272,7 @@ fn test_upgrade_while_paused_fails_with_typed_error() {
     assert_eq!(result, Err(Ok(Error::Paused)));
     assert_eq!(client.version(), version_before);
     assert!(client.is_emergency_paused());
+    assert_eq!(upgrade_event_count(&env), 0);
 }
 
 // ============================================================================

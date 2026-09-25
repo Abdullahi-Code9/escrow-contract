@@ -1111,6 +1111,17 @@ pub struct MultiSigTransferAdminEvent {
     pub allocations: Vec<i128>,
 }
 
+/// Emitted by `upgrade` recording the outcome of a contract WASM upgrade.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractUpgradedEvent {
+    pub admin: Address,
+    pub new_wasm_hash: BytesN<32>,
+    pub version: u32,
+}
+
+pub type UpgradeEvent = ContractUpgradedEvent;
+
 #[contract]
 pub struct MilestoneEscrow;
 
@@ -3738,12 +3749,22 @@ impl MilestoneEscrow {
         Self::ensure_not_paused(&env)?;
 
         env.deployer()
-            .update_current_contract(ContractExecutable::Wasm(new_wasm_hash));
+            .update_current_contract(ContractExecutable::Wasm(new_wasm_hash.clone()));
 
         let current: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(1);
+        let new_version = current + 1;
         env.storage()
             .instance()
-            .set(&DataKey::Version, &(current + 1));
+            .set(&DataKey::Version, &new_version);
+
+        env.events().publish(
+            (symbol_short!("upgrade"),),
+            ContractUpgradedEvent {
+                admin,
+                new_wasm_hash,
+                version: new_version,
+            },
+        );
 
         Ok(())
     }
@@ -4922,11 +4943,17 @@ impl MilestoneEscrow {
         Self::assemble_job(&env, &meta)
     }
 
-    pub fn get_reputation(env: Env, address: Address) -> u32 {
-        env.storage()
+    /// Return the reputation counter for an address.
+    ///
+    /// # Errors
+    /// * `NotInitialized` - Contract has not been initialized.
+    pub fn get_reputation(env: Env, address: Address) -> Result<u32, Error> {
+        Self::load_admin(&env)?;
+        Ok(env
+            .storage()
             .persistent()
             .get(&DataKey::Reputation(address))
-            .unwrap_or(0)
+            .unwrap_or(0))
     }
 
     // ── escrow_interest_yield: estimator + share-config validation ────────────
@@ -5080,9 +5107,17 @@ impl MilestoneEscrow {
     }
 
     /// Clear the execution lock so share configuration can be modified again.
+    ///
+    /// # Errors
+    /// * `NotInitialized` - Contract admin key or interest/yield state missing.
+    /// * `Unauthorized` - Caller is not the stored admin.
+    /// * `InvalidStatus` - Interest/yield lock is not active (already unlocked).
     pub fn unlock_escrow_interest_yield(env: Env, admin: Address) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
         let mut state = Self::load_interest_yield_state(&env)?;
+        if !state.locked {
+            return Err(Error::InvalidStatus);
+        }
         state.locked = false;
         Self::store_interest_yield_state(&env, &state);
         Ok(())
@@ -5779,27 +5814,17 @@ impl MilestoneEscrow {
             return Ok(());
         }
 
-        env.storage().instance().set(&DataKey::EpLk, &true);
+        env.storage().instance().set(&DataKey::Paused, &true);
 
-        let result = (|| {
-            env.storage().instance().set(&DataKey::Paused, &true);
+        env.events().publish(
+            (symbol_short!("pause"),),
+            EscrowPausedEvent {
+                admin,
+                contract_id: env.current_contract_address(),
+            },
+        );
 
-            // The early return above means this only runs on a real
-            // transition, so the event is unconditional here.
-            env.events().publish(
-                (symbol_short!("pause"),),
-                EscrowPausedEvent {
-                    admin: admin.clone(),
-                    contract_id: env.current_contract_address(),
-                },
-            );
-
-            Ok(())
-        })();
-
-        env.storage().instance().set(&DataKey::EpLk, &false);
-
-        result
+        Ok(())
     }
 
     /// Resume a previously paused escrow, re-enabling all normal user-facing

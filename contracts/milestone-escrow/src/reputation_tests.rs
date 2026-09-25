@@ -9,6 +9,7 @@
 //! contract function untested while its snapshots stayed behind.
 
 use crate::test::setup_funded_escrow;
+use crate::{Error, MilestoneEscrow, MilestoneEscrowClient};
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{vec, Address, Env};
 
@@ -95,4 +96,19 @@ fn test_reputation_not_incremented_on_failed_release() {
     // ...and must not credit anyone on the way out.
     assert_eq!(client.get_reputation(&client_addr), 0);
     assert_eq!(client.get_reputation(&freelancer_addr), 0);
+}
+
+#[test]
+fn test_get_reputation_uninitialized_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let stranger = Address::generate(&env);
+
+    assert_eq!(
+        client.try_get_reputation(&stranger),
+        Err(Ok(Error::NotInitialized))
+    );
 }

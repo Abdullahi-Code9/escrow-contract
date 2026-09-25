@@ -153,3 +153,56 @@ fn test_escrow_interest_yield_consent_uninitialized_rejected() {
         Err(Ok(Error::NotInitialized))
     );
 }
+
+#[test]
+fn test_unlock_escrow_interest_yield_unauthorized_no_mutation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.set_interest_yield_consent(&admin_addr, &5_000u32, &5_000u32);
+    client.lock_escrow_interest_yield(&admin_addr);
+    assert!(client.is_escrow_interest_yield_locked());
+
+    let attacker = Address::generate(&env);
+    let result = client.try_unlock_escrow_interest_yield(&attacker);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    assert!(
+        client.is_escrow_interest_yield_locked(),
+        "unauthorized unlock must not change the lock flag"
+    );
+}
+
+#[test]
+fn test_unlock_escrow_interest_yield_illegal_source_state_no_mutation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.set_interest_yield_consent(&admin_addr, &5_000u32, &5_000u32);
+    assert!(!client.is_escrow_interest_yield_locked());
+
+    let result = client.try_unlock_escrow_interest_yield(&admin_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+    assert!(
+        !client.is_escrow_interest_yield_locked(),
+        "rejected unlock must not mutate lock flag"
+    );
+}
+
+#[test]
+fn test_unlock_escrow_interest_yield_uninitialized_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let caller = Address::generate(&env);
+
+    assert_eq!(
+        client.try_unlock_escrow_interest_yield(&caller),
+        Err(Ok(Error::NotInitialized))
+    );
+}
