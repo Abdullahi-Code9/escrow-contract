@@ -2180,6 +2180,10 @@ impl MilestoneEscrow {
         }
 
         env.storage().persistent().set(&DataKey::Admin, &new_admin);
+        // Keep the instance copy in sync: `require_admin_from_instance`
+        // authorizes against it, so a stale value would leave the old admin
+        // in control of those endpoints.
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
 
         env.events().publish(
             (symbol_short!("admin"),),
@@ -5074,6 +5078,11 @@ impl MilestoneEscrow {
         if old_admin != pending.new_admin {
             env.storage()
                 .persistent()
+                .set(&DataKey::Admin, &pending.new_admin);
+            // Keep the instance copy read by `require_admin_from_instance`
+            // in sync with the persistent one.
+            env.storage()
+                .instance()
                 .set(&DataKey::Admin, &pending.new_admin);
         }
         env.storage()
