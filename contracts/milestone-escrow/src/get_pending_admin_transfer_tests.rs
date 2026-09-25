@@ -60,11 +60,7 @@ fn capture_ledger(env: &Env, contract_id: &Address) -> LedgerSnapshot {
             .get(&DataKey::PendingAdminTransfer);
         let admin: Option<Address> = env.storage().instance().get(&DataKey::Admin);
         // The emergency-pause flag lives under DataKey::Ep (not DataKey::Paused).
-        let paused: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Ep)
-            .unwrap_or(false);
+        let paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
         LedgerSnapshot {
             pending,
             admin,
@@ -105,8 +101,7 @@ fn test_get_pending_admin_transfer_returns_none_when_no_proposal_exists() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, _, _, contract_id, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (_, _, _, _, _, contract_id, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     let before = capture_ledger(&env, &contract_id);
     assert!(!before.pending_key_exists, "no proposal should exist yet");
@@ -303,8 +298,7 @@ fn test_get_pending_admin_transfer_snapshot_byte_identical_when_no_proposal() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, _, _, contract_id, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (_, _, _, _, _, contract_id, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     // No proposal – the key is absent.
     let before = capture_ledger(&env, &contract_id);
@@ -324,8 +318,7 @@ fn test_get_pending_admin_transfer_returns_exact_proposal_payload() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, admin_addr, _, _, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     let new_admin = Address::generate(&env);
     let proposal_id: u32 = 12_345;
 
