@@ -4183,7 +4183,43 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    /// Read-only accessor for the configured platform fee split.
+    /// Return the current platform-fee allocation stored in instance storage.
+    ///
+    /// This is a **pure read** — it never writes to any storage tier, emits no
+    /// events, and performs no authentication checks.  Any caller may invoke it
+    /// at any time, including while the contract is emergency-paused.
+    ///
+    /// # Return values
+    ///
+    /// | State | Return value |
+    /// |-------|-------------|
+    /// | Contract not yet initialized (`initialize` never called) | `Err(Error::NotInitialized)` |
+    /// | After `initialize`, before `set_platform_fee_allocation` | `Ok(PlatformFeeAllocation { client_bps: 0, freelancer_bps: 10_000, treasury_bps: 0, locked: false })` |
+    /// | After `set_platform_fee_allocation` or `pf_alloc_admin_override` | `Ok(PlatformFeeAllocation { …, locked: false })` |
+    /// | After `lock_platform_fee_allocation` | `Ok(PlatformFeeAllocation { …, locked: true })` |
+    ///
+    /// `initialize` writes a default allocation of
+    /// `{ client_bps: 0, freelancer_bps: 10_000, treasury_bps: 0, locked: false }`
+    /// to instance storage, so the key is always present once the contract is
+    /// initialized.  The only way to get `Err(NotInitialized)` is to call this
+    /// function before `initialize` has ever succeeded.
+    ///
+    /// For every `Ok` variant the three basis-point fields satisfy
+    /// `client_bps + freelancer_bps + treasury_bps == 10_000` (= `BPS_SCALE`);
+    /// this invariant is enforced by `initialize`, `set_platform_fee_allocation`,
+    /// and `pf_alloc_admin_override` before writing, so it always holds for
+    /// any value this function can return.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotInitialized`] (code 2) when
+    /// `DataKey::PlatformFeeAllocation` is absent from instance storage, which
+    /// is the case only for contracts on which `initialize` has not yet been
+    /// successfully invoked.
+    ///
+    /// No other error is possible: the function does not validate its
+    /// arguments, touch token balances, check pause state, or require any
+    /// authorisation.
     ///
     /// INVARIANT: this function must never write to instance, persistent, or
     /// temporary storage (directly or transitively), and must never emit

@@ -21,6 +21,8 @@ mod admin_tax_withholding_guards_tests;
 mod arbitration_split_event_tests;
 #[path = "execute_admin_transfer_tests.rs"]
 mod execute_admin_transfer_tests;
+#[path = "get_platform_fee_allocation_tests.rs"]
+mod get_platform_fee_allocation_tests;
 #[path = "milestone_time_extensions_tests.rs"]
 mod milestone_time_extensions_tests;
 #[path = "multisig_admin_override_refund_tests.rs"]
