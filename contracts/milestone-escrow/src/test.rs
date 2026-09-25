@@ -11649,6 +11649,223 @@ fn test_set_platform_fee_allocation_fails_does_not_emit_event() {
     assert_eq!(pf_set_count, 0, "should not emit pf_set event on failure");
 }
 
+// ── set_platform_fee_allocation storage-footprint tests (issue #472) ─────────
+//
+// set_platform_fee_allocation previously touched two distinct ledger entries:
+//   1. persistent::Admin  — read by require_admin / load_admin
+//   2. instance (Admin, PlatformFeeAllocation, PlatformFeeAllocationLock, EpLk)
+//
+// After the consolidation, Admin is read from instance storage via
+// require_admin_from_instance, so the whole function operates on a single
+// instance ledger entry.
+
+/// Helper: build an initialised escrow and return (contract_id, admin, client).
+fn setup_pf_alloc_contract(env: &Env) -> (Address, Address, MilestoneEscrowClient) {
+    let admin = Address::generate(env);
+    let client_addr = Address::generate(env);
+    let freelancer_addr = Address::generate(env);
+    let arbiter = Address::generate(env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(env, &contract_id);
+    escrow.initialize(
+        &admin,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter,
+        &token,
+        &604800u64,
+        &vec![env, 1_000_i128],
+    );
+    (contract_id, admin, escrow)
+}
+
+/// set_platform_fee_allocation must write PlatformFeeAllocation to instance
+/// storage; the Admin read must stay in instance storage (not persistent),
+/// meaning both operations target a single ledger entry.
+#[test]
+fn test_set_platform_fee_allocation_writes_instance_storage_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, admin, escrow) = setup_pf_alloc_contract(&env);
+
+    // Admin must be in instance storage after initialize.
+    let instance_admin: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Admin)
+    });
+    assert!(instance_admin.is_some(), "Admin must be in instance storage");
+
+    escrow.set_platform_fee_allocation(&admin, &2_000u32, &7_000u32, &1_000u32);
+
+    // Updated allocation must appear in instance storage.
+    let alloc: Option<PlatformFeeAllocation> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::PlatformFeeAllocation)
+    });
+    let alloc = alloc.expect("PlatformFeeAllocation must be present in instance storage");
+    assert_eq!(alloc.client_bps, 2_000);
+    assert_eq!(alloc.freelancer_bps, 7_000);
+    assert_eq!(alloc.treasury_bps, 1_000);
+    assert!(!alloc.locked);
+}
+
+/// set_platform_fee_allocation must not alter persistent storage.
+#[test]
+fn test_set_platform_fee_allocation_does_not_touch_persistent_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, admin, escrow) = setup_pf_alloc_contract(&env);
+
+    // Snapshot persistent::Admin before the call.
+    let admin_before: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Admin)
+    });
+
+    escrow.set_platform_fee_allocation(&admin, &5_000u32, &4_000u32, &1_000u32);
+
+    // persistent::Admin must be unchanged.
+    let admin_after: Option<Address> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Admin)
+    });
+    assert_eq!(
+        admin_before, admin_after,
+        "set_platform_fee_allocation must not alter persistent::Admin"
+    );
+
+    // PlatformFeeAllocation must NOT appear in persistent storage.
+    let alloc_persistent: Option<PlatformFeeAllocation> = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PlatformFeeAllocation)
+    });
+    assert_eq!(
+        alloc_persistent, None,
+        "PlatformFeeAllocation must not be written to persistent storage"
+    );
+}
+
+/// Rejected call (unauthorized admin) must not alter PlatformFeeAllocation.
+#[test]
+fn test_set_platform_fee_allocation_unauthorized_leaves_no_trace() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _, escrow) = setup_pf_alloc_contract(&env);
+
+    // Snapshot the initial allocation written by initialize.
+    let alloc_before: Option<PlatformFeeAllocation> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::PlatformFeeAllocation)
+    });
+
+    let attacker = Address::generate(&env);
+    let result = escrow.try_set_platform_fee_allocation(&attacker, &5_000u32, &4_000u32, &1_000u32);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // Allocation must be unchanged.
+    let alloc_after: Option<PlatformFeeAllocation> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::PlatformFeeAllocation)
+    });
+    assert_eq!(
+        alloc_before, alloc_after,
+        "unauthorized call must not alter PlatformFeeAllocation"
+    );
+}
+
+/// Rejected call (invalid BPS ratio) must not alter PlatformFeeAllocation.
+#[test]
+fn test_set_platform_fee_allocation_invalid_ratio_leaves_no_trace() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, admin, escrow) = setup_pf_alloc_contract(&env);
+
+    let alloc_before: Option<PlatformFeeAllocation> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::PlatformFeeAllocation)
+    });
+
+    // 3000 + 3000 + 3000 = 9000 ≠ 10000.
+    let result = escrow.try_set_platform_fee_allocation(&admin, &3_000u32, &3_000u32, &3_000u32);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+
+    let alloc_after: Option<PlatformFeeAllocation> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::PlatformFeeAllocation)
+    });
+    assert_eq!(
+        alloc_before, alloc_after,
+        "invalid-ratio call must not alter PlatformFeeAllocation"
+    );
+}
+
+/// Calling before initialize must return NotInitialized —
+/// the instance Admin key is absent so require_admin_from_instance returns early.
+#[test]
+fn test_set_platform_fee_allocation_before_initialize_returns_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    let result = escrow.try_set_platform_fee_allocation(&admin, &5_000u32, &4_000u32, &1_000u32);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+
+    // Nothing must have been written.
+    let alloc: Option<PlatformFeeAllocation> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::PlatformFeeAllocation)
+    });
+    assert_eq!(alloc, None);
+}
+
+/// Successive valid calls correctly update the instance-stored allocation.
+#[test]
+fn test_set_platform_fee_allocation_successive_updates_stay_in_instance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, admin, escrow) = setup_pf_alloc_contract(&env);
+
+    escrow.set_platform_fee_allocation(&admin, &2_000u32, &7_000u32, &1_000u32);
+    escrow.set_platform_fee_allocation(&admin, &1_000u32, &8_000u32, &1_000u32);
+
+    let alloc: PlatformFeeAllocation = env
+        .as_contract(&contract_id, || {
+            env.storage().instance().get(&DataKey::PlatformFeeAllocation)
+        })
+        .expect("PlatformFeeAllocation must be present");
+
+    assert_eq!(alloc.client_bps, 1_000);
+    assert_eq!(alloc.freelancer_bps, 8_000);
+    assert_eq!(alloc.treasury_bps, 1_000);
+    assert!(!alloc.locked);
+
+    // Public accessor must agree.
+    let public_alloc = escrow.get_platform_fee_allocation();
+    assert_eq!(public_alloc.client_bps, 1_000);
+    assert_eq!(public_alloc.freelancer_bps, 8_000);
+    assert_eq!(public_alloc.treasury_bps, 1_000);
+}
+
+/// The re-entrancy lock (PlatformFeeAllocationLock) must be cleared after
+/// a successful call — confirmed to stay in instance storage.
+#[test]
+fn test_set_platform_fee_allocation_clears_lock_on_instance_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, admin, escrow) = setup_pf_alloc_contract(&env);
+
+    escrow.set_platform_fee_allocation(&admin, &5_000u32, &4_000u32, &1_000u32);
+
+    let lock: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::PlatformFeeAllocationLock)
+    });
+    assert_eq!(
+        lock,
+        Some(false),
+        "PlatformFeeAllocationLock must be cleared (false) in instance storage after call"
+    );
+}
+
 #[test]
 fn test_platform_fee_split_rounds_to_zero() {
     let env = Env::default();

@@ -1131,6 +1131,32 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Variant of `require_admin` that reads `DataKey::Admin` from **instance**
+    /// storage instead of persistent storage.
+    ///
+    /// During `initialize` the admin address is written to both
+    /// `instance()` and `persistent()` storage (see `initialize`).  Callers
+    /// that also write other instance-storage keys in the same call can use
+    /// this helper so that both the admin read and the subsequent instance write
+    /// touch a **single** ledger entry rather than two.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – The instance `Admin` key is absent (contract has
+    ///   not been initialised).
+    /// * `Unauthorized`   – `admin` does not match the stored admin.
+    fn require_admin_from_instance(env: &Env, admin: &Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if stored_admin != *admin {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
+    }
+
     /// Validation hook: verify that **both** the client and the freelancer
     /// recorded on the job have signed the current transaction.
     ///
@@ -3837,6 +3863,24 @@ impl MilestoneEscrow {
         env.storage().instance().get(&DataKey::Ep).unwrap_or(false)
     }
 
+    /// Write the client/freelancer/treasury fee split for the platform.
+    ///
+    /// ## Storage-footprint note
+    ///
+    /// This function uses `require_admin_from_instance` rather than the
+    /// standard `require_admin` helper so that the admin verification read
+    /// (`DataKey::Admin`, instance) and all subsequent instance reads/writes
+    /// (`PlatformFeeAllocationLock`, `PlatformFeeAllocation`, `EpLk`) touch
+    /// the **same single ledger entry** (instance storage) instead of two
+    /// (persistent + instance).
+    ///
+    /// # Errors
+    /// * `NotInitialized`                  – Contract has not been initialised.
+    /// * `Unauthorized`                    – `admin` is not the stored admin.
+    /// * `PlatformFeeAllocationInProgress` – Re-entrancy lock is held.
+    /// * `EmergencyPauseInProgress`        – Emergency pause lock is held.
+    /// * `InvalidRatio`                    – BPS values do not sum to 10 000.
+    /// * `InvalidStatus`                   – Allocation is locked.
     pub fn set_platform_fee_allocation(
         env: Env,
         admin: Address,
@@ -3844,7 +3888,9 @@ impl MilestoneEscrow {
         freelancer_bps: u32,
         treasury_bps: u32,
     ) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+        // Both the Admin read and all subsequent instance reads/writes touch
+        // instance storage only, so the whole function uses a single ledger entry.
+        Self::require_admin_from_instance(&env, &admin)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
         Self::validate_fee_allocation(client_bps, freelancer_bps, treasury_bps)?;
