@@ -6532,6 +6532,61 @@ fn test_add_whitelisted_token_old_admin_rejected_after_transfer() {
     assert!(client.is_token_whitelisted(&token3));
 }
 
+// Issue #444: transfer_admin reads DataKey::Admin exactly once (consolidated
+// from the previous has() + load_admin() double read). These guard the two
+// error paths that the single read now serves.
+
+#[test]
+fn test_transfer_admin_uninitialized_returns_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let new_admin_addr = Address::generate(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // No admin has ever been stored → the single Admin read yields None.
+    let result = client.try_transfer_admin(&admin_addr, &new_admin_addr);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn test_transfer_admin_wrong_caller_returns_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let new_admin_addr = Address::generate(&env);
+    let not_admin = Address::generate(&env);
+
+    let token = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+
+    // The single Admin read is compared against the caller → mismatch rejected,
+    // and the stored admin is left unchanged.
+    let result = client.try_transfer_admin(&not_admin, &new_admin_addr);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // Admin unchanged: the real admin can still rotate.
+    client.transfer_admin(&admin_addr, &new_admin_addr);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TASK 2 TESTS: require_dispute_party auth for raise_dispute
 // ═══════════════════════════════════════════════════════════════════════════════
