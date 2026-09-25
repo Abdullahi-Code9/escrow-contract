@@ -228,7 +228,7 @@ fn test_cancel_admin_transfer_footprint_full_storage_snapshot() {
 
     // Sanity: the key we expect to disappear is actually present beforehand.
     let pending_key: Val = DataKey::PendingAdminTransfer.into_val(&env);
-    assert!(persistent_before.get(pending_key.clone()).is_some());
+    assert!(persistent_before.get(pending_key).is_some());
 
     client.cancel_admin_transfer_proposal(&admin_addr);
 
@@ -252,8 +252,8 @@ fn test_cancel_admin_transfer_footprint_full_storage_snapshot() {
     // Persistent storage lost exactly one entry: PendingAdminTransfer. Every
     // other persistent key/value pair (including Admin) survives unchanged.
     assert_eq!(persistent_after.len(), persistent_before.len() - 1);
-    assert!(persistent_after.get(pending_key.clone()).is_none());
-    for (key, value) in persistent_after.iter() {
-        assert_eq!(persistent_before.get(key), Some(value));
-    }
+    assert!(persistent_after.get(pending_key).is_none());
+    let mut expected_persistent = persistent_before.clone();
+    expected_persistent.remove(pending_key);
+    assert_eq!(persistent_after, expected_persistent);
 }
